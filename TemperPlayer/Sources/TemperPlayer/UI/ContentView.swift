@@ -31,30 +31,20 @@ struct ContentView: View {
             playerState.isPlaying = p
             if p { playerState.duration = audioManager.duration }
         }
-        .background {
-            Button("") {
-                if playerState.isPlaying {
-                    audioManager.pause()
-                } else if playerState.currentTrack != nil {
-                    audioManager.resume()
+        .overlay(
+            VStack(spacing: 0) {
+                Button("") {
+                    if playerState.isPlaying { audioManager.pause() }
+                    else if playerState.currentTrack != nil { audioManager.resume() }
                 }
+                .keyboardShortcut(.space, modifiers: [])
+                Button("") { audioManager.seek(to: max(0, playerState.currentTime - 5)) }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                Button("") { audioManager.seek(to: min(playerState.duration, playerState.currentTime + 5)) }
+                .keyboardShortcut(.rightArrow, modifiers: [])
             }
-            .keyboardShortcut(.space, modifiers: [])
-            .hidden()
-        }
-        .background {
-            Button("") {
-                audioManager.seek(to: max(0, playerState.currentTime - 5))
-            }
-            .keyboardShortcut(.leftArrow, modifiers: [])
-            .hidden()
-        }
-        .background {
-            Button("") {
-                audioManager.seek(to: min(playerState.duration, playerState.currentTime + 5))
-            }
-            .keyboardShortcut(.rightArrow, modifiers: [])
-            .hidden()
-        }
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+        )
     }
 }
