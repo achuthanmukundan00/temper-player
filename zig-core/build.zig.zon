@@ -1,0 +1,7 @@
+.{
+    .name = .temperplayer,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{ "build.zig", "build.zig.zon", "src", "libs" },
+    .fingerprint = 0x6387be902f253852,
+}
