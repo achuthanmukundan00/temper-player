@@ -24,5 +24,37 @@ struct ContentView: View {
         }
         .background(Color.black)
         .onDrop(of: [.fileURL], delegate: ImportDropDelegate())
+        .onReceive(audioManager.$currentTime) { t in
+            playerState.currentTime = t
+        }
+        .onReceive(audioManager.$isPlaying) { p in
+            playerState.isPlaying = p
+            if p { playerState.duration = audioManager.duration }
+        }
+        .background {
+            Button("") {
+                if playerState.isPlaying {
+                    audioManager.pause()
+                } else if playerState.currentTrack != nil {
+                    audioManager.resume()
+                }
+            }
+            .keyboardShortcut(.space, modifiers: [])
+            .hidden()
+        }
+        .background {
+            Button("") {
+                audioManager.seek(to: max(0, playerState.currentTime - 5))
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [])
+            .hidden()
+        }
+        .background {
+            Button("") {
+                audioManager.seek(to: min(playerState.duration, playerState.currentTime + 5))
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [])
+            .hidden()
+        }
     }
 }

@@ -42,6 +42,11 @@ struct TransportBar: View {
                     Rectangle().fill(Color(white: 0.35))
                         .frame(width: geo.size.width * CGFloat(playerState.volume))
                 }
+                .gesture(DragGesture(minimumDistance: 0).onChanged { v in
+                    let vol = Float(min(1, max(0, v.location.x / geo.size.width)))
+                    playerState.volume = vol
+                    audioManager.setVolume(vol)
+                })
             }
             .frame(width: 28 * uiScale, height: 4 * uiScale)
 
