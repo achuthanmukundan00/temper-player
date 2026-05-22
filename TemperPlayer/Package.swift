@@ -13,10 +13,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "TemperPlayer",
-            dependencies: ["CTemperPlayer"],
-            swiftSettings: [
-                .unsafeFlags(["-L", "$(PROJECT_DIR)/../zig-core/zig-out/lib"]),
-            ]
+            dependencies: ["CTemperPlayer"]
         ),
     ]
 )

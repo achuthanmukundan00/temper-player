@@ -86,14 +86,14 @@ class Database: ObservableObject {
 
     sqlite3_bind_text(stmt, 1, (track.id as NSString).utf8String, -1, nil)
     sqlite3_bind_text(stmt, 2, (track.path as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 3, (track.title as NSString?)?.utf8String ?? "", -1, nil)
-    sqlite3_bind_text(stmt, 4, (track.artist as NSString?)?.utf8String ?? "", -1, nil)
-    sqlite3_bind_text(stmt, 5, (track.album as NSString?)?.utf8String ?? "", -1, nil)
-    sqlite3_bind_text(stmt, 6, (track.albumArtist as NSString?)?.utf8String ?? "", -1, nil)
+    sqlite3_bind_text(stmt, 3, (track.title as NSString?)?.utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 4, (track.artist as NSString?)?.utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 5, (track.album as NSString?)?.utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 6, (track.albumArtist as NSString?)?.utf8String, -1, nil)
     sqlite3_bind_int(stmt, 7, Int32(track.trackNo ?? 0))
     sqlite3_bind_int(stmt, 8, Int32(track.discNo ?? 0))
     sqlite3_bind_int(stmt, 9, Int32(track.year ?? 0))
-    sqlite3_bind_text(stmt, 10, (track.genre as NSString?)?.utf8String ?? "", -1, nil)
+    sqlite3_bind_text(stmt, 10, (track.genre as NSString?)?.utf8String, -1, nil)
     sqlite3_bind_double(stmt, 11, track.duration)
     sqlite3_bind_text(stmt, 12, (track.format as NSString).utf8String, -1, nil)
     sqlite3_bind_int(stmt, 13, Int32(track.sampleRate))
@@ -102,7 +102,7 @@ class Database: ObservableObject {
     sqlite3_bind_int(stmt, 16, Int32(track.bitrate))
     sqlite3_bind_int(stmt, 17, Int32(track.fileSize))
     sqlite3_bind_text(stmt, 18, (iso.string(from: track.dateAdded) as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 19, (track.artworkPath as NSString?)?.utf8String ?? "", -1, nil)
+    sqlite3_bind_text(stmt, 19, (track.artworkPath as NSString?)?.utf8String, -1, nil)
     sqlite3_bind_double(stmt, 20, track.dcOffset ?? 0)
     sqlite3_bind_double(stmt, 21, track.lufs ?? 0)
     sqlite3_bind_double(stmt, 22, track.truePeak ?? 0)
@@ -143,6 +143,7 @@ class Database: ObservableObject {
       let dateStr = String(cString: sqlite3_column_text(stmt, 17))
       let dateAdded = iso.date(from: dateStr) ?? Date()
       let lastPlayedStr = optStr(stmt, 18)
+      let lastPlayed: Date? = lastPlayedStr.flatMap { iso.date(from: $0) }
       let playCount = Int(sqlite3_column_int(stmt, 19))
       let artworkPath = optStr(stmt, 20)
       let dcOffset = optDouble(stmt, 21)
@@ -157,7 +158,7 @@ class Database: ObservableObject {
           albumArtist: albumArtist, trackNo: trackNo, discNo: discNo, year: year,
           genre: genre, duration: duration, format: format, sampleRate: sampleRate,
           bitDepth: bitDepth, channels: channels, bitrate: bitrate, fileSize: fileSize,
-          dateAdded: dateAdded, lastPlayed: nil, playCount: playCount,
+          dateAdded: dateAdded, lastPlayed: lastPlayed, playCount: playCount,
           artworkPath: artworkPath, dcOffset: dcOffset, lufs: lufs, truePeak: truePeak,
           dynamicRange: dynamicRange, phaseCorrelation: phaseCorrelation
         ))
