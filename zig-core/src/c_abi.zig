@@ -1,6 +1,8 @@
 const std = @import("std");
 const decoder_mod = @import("decoder.zig");
 const Decoder = decoder_mod.Decoder;
+const metadata_mod = @import("metadata.zig");
+const mastering_mod = @import("mastering.zig");
 
 threadlocal var gpa_instance: std.heap.DebugAllocator(.{}) = .{};
 
@@ -64,19 +66,35 @@ export fn decode_get_info(h: *anyopaque) SampleFormat {
 }
 
 export fn metadata_read(path: [*:0]const u8) ?[*:0]u8 {
-    _ = path;
-    return null;
+    const allocator = gpa_instance.allocator();
+    const path_slice: [:0]const u8 = std.mem.sliceTo(path, 0);
+    const meta = metadata_mod.readMetadata(path_slice, allocator) catch return null;
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    std.json.Stringify.value(meta, .{}, &aw.writer) catch return null;
+    const result = aw.toOwnedSliceSentinel(0) catch return null;
+    return result.ptr;
 }
 
 export fn metadata_free(ptr: [*:0]u8) void {
-    _ = ptr;
+    const allocator = gpa_instance.allocator();
+    allocator.free(std.mem.sliceTo(ptr, 0));
 }
 
 export fn decode_get_mastering(path: [*:0]const u8) MasteringInfo {
-    _ = path;
-    return .{
+    const path_slice: [:0]const u8 = std.mem.sliceTo(path, 0);
+    const m = mastering_mod.analyze(path_slice) catch return .{
         .lufs = 0, .true_peak_db = 0, .peak_db = 0,
         .dynamic_range_db = 0, .phase_correlation = 0,
         .dc_offset_pct = 0, .phase_ok = 0,
+    };
+    return .{
+        .lufs = m.lufs,
+        .true_peak_db = m.true_peak_db,
+        .peak_db = m.peak_db,
+        .dynamic_range_db = m.dynamic_range_db,
+        .phase_correlation = m.phase_correlation,
+        .dc_offset_pct = m.dc_offset_pct,
+        .phase_ok = m.phase_ok,
     };
 }
