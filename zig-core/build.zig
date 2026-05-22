@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
     });
     mod.linkSystemLibrary("c", .{});
     mod.addIncludePath(b.path("libs"));
+    mod.addCSourceFile(.{ .file = b.path("src/dr_flac_accessors.c"), .flags = &.{} });
 
     b.installArtifact(lib);
 }
