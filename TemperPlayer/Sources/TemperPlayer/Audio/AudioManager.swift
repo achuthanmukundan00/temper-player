@@ -13,7 +13,7 @@ class AudioManager: ObservableObject {
     private let scheduleQueue = DispatchQueue(label: "com.temperplayer.audio")
     private let frameBatch: Int32 = 8192
 
-    override init() {
+    init() {
         engine.attach(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
         try? engine.start()
@@ -49,7 +49,6 @@ class AudioManager: ObservableObject {
     private func scheduleBuffer(format: AVAudioFormat) {
         guard let decoder else { return }
 
-        let capacity = Int(frameBatch) * Int(decoder.channels)
         let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameBatch))!
         buf.frameLength = buf.frameCapacity
 
@@ -102,7 +101,7 @@ class AudioManager: ObservableObject {
     }
 
     func seek(to time: Double) {
-        guard let decoder, let path = currentTrackPath else { return }
+        guard let decoder, currentTrackPath != nil else { return }
         let sampleRate = decoder.sampleRate
         let frame = Int64(time * Double(sampleRate))
 

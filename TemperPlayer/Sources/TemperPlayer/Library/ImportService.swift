@@ -10,7 +10,7 @@ struct ImportDropDelegate: DropDelegate {
                 guard let data = item as? Data,
                       let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
                 DispatchQueue.main.async {
-                    ImportService.shared.import(url: url)
+                    ImportService.shared.importTrack(url: url)
                 }
             }
         }
@@ -23,7 +23,7 @@ class ImportService {
 
     private let supportedExtensions: Set<String> = ["flac", "wav", "mp3", "m4a", "aac"]
 
-    func import(url: URL) {
+    func importTrack(url: URL) {
         let path = url.path
         let ext = url.pathExtension.lowercased()
 

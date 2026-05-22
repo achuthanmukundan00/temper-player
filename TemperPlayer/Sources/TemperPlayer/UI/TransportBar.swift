@@ -28,7 +28,6 @@ struct TransportBar: View {
             Text("\(playerState.timeString) / \(playerState.durationString)")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundColor(Color(white: 0.35))
-                .fontVariant(.tabularFigures)
 
             Text("\u{2502}").foregroundColor(Color(white: 0.12))
 
