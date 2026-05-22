@@ -1,4 +1,8 @@
 const std = @import("std");
+const decoder_mod = @import("decoder.zig");
+const Decoder = decoder_mod.Decoder;
+
+threadlocal var gpa_instance: std.heap.DebugAllocator(.{}) = .{};
 
 pub const SampleFormat = extern struct {
     sample_rate: i32,
@@ -18,27 +22,41 @@ pub const MasteringInfo = extern struct {
 };
 
 export fn decode_open(path: [*:0]const u8) ?*anyopaque {
-    _ = path;
-    return null;
+    const path_slice: [:0]const u8 = std.mem.sliceTo(path, 0);
+    const allocator = gpa_instance.allocator();
+    const decoder = allocator.create(Decoder) catch return null;
+    decoder.* = Decoder.open(allocator, path_slice) catch {
+        allocator.destroy(decoder);
+        return null;
+    };
+    return @ptrCast(decoder);
 }
 
 export fn decode_read_frames(h: *anyopaque, buf: [*]f32, frame_count: i32) i32 {
-    _ = .{ h, buf, frame_count };
-    return -1;
+    const decoder: *Decoder = @ptrCast(@alignCast(h));
+    return decoder.readFrames(buf[0..@intCast(frame_count)], frame_count);
 }
 
 export fn decode_seek(h: *anyopaque, pcm_frame: i64) i32 {
-    _ = .{ h, pcm_frame };
-    return -1;
+    const decoder: *Decoder = @ptrCast(@alignCast(h));
+    return if (decoder.seek(pcm_frame)) 0 else -1;
 }
 
 export fn decode_close(h: *anyopaque) void {
-    _ = h;
+    const allocator = gpa_instance.allocator();
+    const decoder: *Decoder = @ptrCast(@alignCast(h));
+    decoder.close();
+    allocator.destroy(decoder);
 }
 
 export fn decode_get_info(h: *anyopaque) SampleFormat {
-    _ = h;
-    return .{ .sample_rate = 0, .channels = 0, .bit_depth = 0, .duration_seconds = 0 };
+    const decoder: *Decoder = @ptrCast(@alignCast(h));
+    return .{
+        .sample_rate = decoder.sample_rate,
+        .channels = decoder.channels,
+        .bit_depth = decoder.bit_depth,
+        .duration_seconds = @as(f64, @floatFromInt(decoder.total_pcm_frames)) / @as(f64, @floatFromInt(decoder.sample_rate)),
+    };
 }
 
 export fn metadata_read(path: [*:0]const u8) ?[*:0]u8 {
