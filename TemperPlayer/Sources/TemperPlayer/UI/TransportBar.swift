@@ -3,9 +3,10 @@ import SwiftUI
 struct TransportBar: View {
     @EnvironmentObject var audioManager: AudioManager
     @EnvironmentObject var playerState: PlayerState
+    @Environment(\.uiScale) var uiScale
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 8 * uiScale) {
             Text(">").foregroundColor(Color(white: 0.5))
 
             Text(playerState.displayPath)
@@ -14,7 +15,7 @@ struct TransportBar: View {
 
             Spacer()
 
-            HStack(spacing: 6) {
+            HStack(spacing: 6 * uiScale) {
                 transportButton("\u{2508}\u{25C0}") { previousTrack() }
                 transportButton("\u{25C0}") { audioManager.seek(to: max(0, playerState.currentTime - 5)) }
                 playPauseButton
@@ -26,13 +27,13 @@ struct TransportBar: View {
             Text("\u{2502}").foregroundColor(Color(white: 0.12))
 
             Text("\(playerState.timeString) / \(playerState.durationString)")
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 9 * uiScale, design: .monospaced))
                 .foregroundColor(Color(white: 0.35))
 
             Text("\u{2502}").foregroundColor(Color(white: 0.12))
 
             Text("vol:\(Int(playerState.volume * 100))")
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 9 * uiScale, design: .monospaced))
                 .foregroundColor(Color(white: 0.35))
 
             GeometryReader { geo in
@@ -42,24 +43,28 @@ struct TransportBar: View {
                         .frame(width: geo.size.width * CGFloat(playerState.volume))
                 }
             }
-            .frame(width: 28, height: 4)
+            .frame(width: 28 * uiScale, height: 4 * uiScale)
+
+            Text("\(Int(uiScale * 100))%")
+                .font(.system(size: 7 * uiScale, design: .monospaced))
+                .foregroundColor(Color(white: 0.25))
         }
-        .padding(.horizontal, 12)
-        .frame(height: 34)
+        .padding(.horizontal, 12 * uiScale)
+        .frame(height: 34 * uiScale)
         .background(Color.black)
         .overlay(Rectangle().fill(Color(white: 0.06)).frame(height: 1).frame(maxHeight: .infinity, alignment: .top))
     }
 
     private func transportButton(_ label: String, action: @escaping () -> Void) -> some View {
-        Text(label).font(.system(size: 8, design: .monospaced))
+        Text(label).font(.system(size: 8 * uiScale, design: .monospaced))
             .foregroundColor(Color(white: 0.35)).onTapGesture { action() }
     }
 
     private var playPauseButton: some View {
         Text(playerState.isPlaying ? "\u{25A0}" : "\u{25B6}")
-            .font(.system(size: 9, design: .monospaced))
+            .font(.system(size: 9 * uiScale, design: .monospaced))
             .foregroundColor(.white)
-            .frame(width: 16, height: 16)
+            .frame(width: 16 * uiScale, height: 16 * uiScale)
             .overlay(Circle().stroke(Color(white: 0.2), lineWidth: 1))
             .onTapGesture { togglePlay() }
     }

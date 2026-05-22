@@ -6,11 +6,13 @@ class Database: ObservableObject {
 
   @Published var tracks: [Track] = []
   @Published var selectedTrack: Track?
+  @Published var playlists: [Playlist] = []
 
   init() {
     open()
     createSchema()
     loadTracks()
+    loadPlaylists()
   }
 
   private func open() {
@@ -180,6 +182,107 @@ class Database: ObservableObject {
   private func optDouble(_ stmt: OpaquePointer?, _ idx: Int32) -> Double? {
     guard sqlite3_column_type(stmt, idx) != SQLITE_NULL else { return nil }
     return sqlite3_column_double(stmt, idx)
+  }
+
+  // MARK: - Playlists
+
+  func loadPlaylists() {
+    var results: [Playlist] = []
+    let sql = "SELECT * FROM playlists ORDER BY name ASC"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+
+    let iso = ISO8601DateFormatter()
+
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      let id = String(cString: sqlite3_column_text(stmt, 0))
+      let name = String(cString: sqlite3_column_text(stmt, 1))
+      let desc = optStr(stmt, 2)
+      let createdStr = String(cString: sqlite3_column_text(stmt, 3))
+      let created = iso.date(from: createdStr) ?? Date()
+      let modifiedStr = String(cString: sqlite3_column_text(stmt, 4))
+      let modified = iso.date(from: modifiedStr) ?? Date()
+      let trackIds = trackIdsForPlaylist(playlistId: id)
+      results.append(Playlist(id: id, name: name, description: desc, created: created, modified: modified, tracks: trackIds))
+    }
+    sqlite3_finalize(stmt)
+    self.playlists = results
+  }
+
+  private func trackIdsForPlaylist(playlistId: String) -> [String] {
+    var results: [String] = []
+    let sql = "SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (playlistId as NSString).utf8String, -1, nil)
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      results.append(String(cString: sqlite3_column_text(stmt, 0)))
+    }
+    sqlite3_finalize(stmt)
+    return results
+  }
+
+  func createPlaylist(name: String) -> Playlist {
+    let id = UUID().uuidString
+    let now = ISO8601DateFormatter().string(from: Date())
+    let sql = "INSERT INTO playlists (id, name, created, modified) VALUES (?,?,?,?)"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 2, (name as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 3, (now as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 4, (now as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+    let p = Playlist(id: id, name: name, description: nil, created: Date(), modified: Date(), tracks: [])
+    DispatchQueue.main.async { self.loadPlaylists() }
+    return p
+  }
+
+  func deletePlaylist(id: String) {
+    let delTracks = "DELETE FROM playlist_tracks WHERE playlist_id = ?"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, delTracks, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+
+    let del = "DELETE FROM playlists WHERE id = ?"
+    sqlite3_prepare_v2(db, del, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+    DispatchQueue.main.async { self.loadPlaylists() }
+  }
+
+  func addTrackToPlaylist(trackId: String, playlistId: String) {
+    let position = trackIdsForPlaylist(playlistId: playlistId).count
+    let sql = "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?,?,?)"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (playlistId as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 2, (trackId as NSString).utf8String, -1, nil)
+    sqlite3_bind_int(stmt, 3, Int32(position))
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+    DispatchQueue.main.async { self.loadPlaylists() }
+  }
+
+  func removeTrackFromPlaylist(trackId: String, playlistId: String) {
+    let sql = "DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (playlistId as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 2, (trackId as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+    DispatchQueue.main.async { self.loadPlaylists() }
+  }
+
+  func tracksForPlaylist(_ playlistId: String) -> [Track] {
+    trackIdsForPlaylist(playlistId: playlistId).compactMap { tid in
+      tracks.first { $0.id == tid }
+    }
   }
 
   deinit {

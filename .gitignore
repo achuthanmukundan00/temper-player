@@ -2,3 +2,7 @@
 zig-cache/
 zig-out/
 .zig-cache/
+
+# Swift build artifacts
+.build/
+.DS_Store

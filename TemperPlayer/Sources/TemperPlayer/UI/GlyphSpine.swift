@@ -13,14 +13,15 @@ enum Mode: String, CaseIterable {
 struct GlyphSpine: View {
     @Binding var activeMode: Mode
     @State private var hoveredMode: Mode?
+    @Environment(\.uiScale) var uiScale
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 14 * uiScale) {
             ForEach(Mode.allCases, id: \.self) { mode in
                 Text(mode.label)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 11 * uiScale, design: .monospaced))
                     .foregroundColor(foreground(for: mode))
-                    .frame(width: 36, height: 24)
+                    .frame(width: 36 * uiScale, height: 24 * uiScale)
                     .background(background(for: mode))
                     .onHover { hovering in
                         hoveredMode = hovering ? mode : nil
@@ -31,13 +32,13 @@ struct GlyphSpine: View {
             Spacer()
 
             Text("TERM")
-                .font(.system(size: 7, design: .monospaced))
+                .font(.system(size: 7 * uiScale, design: .monospaced))
                 .foregroundColor(Color(white: 0.15))
                 .rotationEffect(.degrees(-90))
                 .fixedSize()
         }
-        .padding(.vertical, 12)
-        .frame(width: 36)
+        .padding(.vertical, 12 * uiScale)
+        .frame(width: 36 * uiScale)
         .background(Color.black)
         .overlay(
             Rectangle().fill(Color(white: 0.06)).frame(width: 1).frame(maxWidth: .infinity, alignment: .trailing)
