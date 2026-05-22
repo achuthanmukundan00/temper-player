@@ -1,0 +1,5 @@
+module CTemperPlayer [system] {
+    header "temperplayer.h"
+    link "temperplayer"
+    export *
+}
