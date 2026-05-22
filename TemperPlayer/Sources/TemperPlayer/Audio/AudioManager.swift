@@ -6,12 +6,16 @@ class AudioManager: ObservableObject {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private var decoder: DecoderBridge?
+    private var avAudioFile: AVAudioFile?
+    private var isAVFoundationTrack = false
     @Published var isPlaying = false
 
     private var currentTrackPath: String?
     private var currentFrame: Int64 = 0
     private let scheduleQueue = DispatchQueue(label: "com.temperplayer.audio")
     private let frameBatch: Int32 = 8192
+
+    private let decoderFormats: Set<String> = ["flac", "wav"]
 
     init() {
         engine.attach(playerNode)
@@ -22,12 +26,26 @@ class AudioManager: ObservableObject {
     func play(track path: String) {
         stop()
 
+        let ext = path.lowercased().components(separatedBy: ".").last ?? ""
+        currentTrackPath = path
+
+        if decoderFormats.contains(ext) {
+            playViaDecoder(path: path)
+        } else {
+            playViaAVFoundation(path: path)
+        }
+    }
+
+    private func playViaDecoder(path: String) {
         let d = DecoderBridge()
-        guard d.open(path: path) else { return }
+        guard d.open(path: path) else {
+            currentTrackPath = nil
+            return
+        }
 
         decoder = d
-        currentTrackPath = path
         currentFrame = 0
+        isAVFoundationTrack = false
 
         let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -36,12 +54,31 @@ class AudioManager: ObservableObject {
             interleaved: true
         )
 
-        guard let format else { return }
+        guard let format else {
+            decoder = nil
+            currentTrackPath = nil
+            return
+        }
 
         scheduleQueue.async { [weak self] in
             self?.scheduleBuffer(format: format)
         }
 
+        playerNode.play()
+        isPlaying = true
+    }
+
+    private func playViaAVFoundation(path: String) {
+        let url = URL(fileURLWithPath: path)
+        guard let file = try? AVAudioFile(forReading: url) else {
+            currentTrackPath = nil
+            return
+        }
+
+        avAudioFile = file
+        isAVFoundationTrack = true
+
+        playerNode.scheduleFile(file, at: nil)
         playerNode.play()
         isPlaying = true
     }
@@ -85,7 +122,7 @@ class AudioManager: ObservableObject {
     }
 
     func resume() {
-        if !playerNode.isPlaying && decoder != nil {
+        if !playerNode.isPlaying && (decoder != nil || avAudioFile != nil) {
             playerNode.play()
             isPlaying = true
         }
@@ -95,36 +132,52 @@ class AudioManager: ObservableObject {
         playerNode.stop()
         decoder?.close()
         decoder = nil
+        avAudioFile = nil
         currentTrackPath = nil
         currentFrame = 0
+        isAVFoundationTrack = false
         isPlaying = false
     }
 
     func seek(to time: Double) {
-        guard let decoder, currentTrackPath != nil else { return }
-        let sampleRate = decoder.sampleRate
-        let frame = Int64(time * Double(sampleRate))
+        guard let path = currentTrackPath else { return }
 
-        playerNode.stop()
+        if isAVFoundationTrack {
+            guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else { return }
+            avAudioFile = file
+            playerNode.stop()
 
-        _ = decoder.seek(frame: frame)
-        currentFrame = frame
+            let framePosition = AVAudioFramePosition(time * file.fileFormat.sampleRate)
+            file.framePosition = max(0, framePosition)
 
-        let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(sampleRate),
-            channels: AVAudioChannelCount(decoder.channels),
-            interleaved: true
-        )
+            playerNode.scheduleFile(file, at: nil)
+            if isPlaying { playerNode.play() }
+        } else {
+            guard let decoder else { return }
+            let sampleRate = decoder.sampleRate
+            let frame = Int64(time * Double(sampleRate))
 
-        if let format {
-            scheduleQueue.async { [weak self] in
-                self?.scheduleBuffer(format: format)
+            playerNode.stop()
+
+            _ = decoder.seek(frame: frame)
+            currentFrame = frame
+
+            let format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: Double(sampleRate),
+                channels: AVAudioChannelCount(decoder.channels),
+                interleaved: true
+            )
+
+            if let format {
+                scheduleQueue.async { [weak self] in
+                    self?.scheduleBuffer(format: format)
+                }
             }
-        }
 
-        if isPlaying {
-            playerNode.play()
+            if isPlaying {
+                playerNode.play()
+            }
         }
     }
 
@@ -133,6 +186,9 @@ class AudioManager: ObservableObject {
     }
 
     var duration: Double {
+        if isAVFoundationTrack, let file = avAudioFile {
+            return Double(file.length) / file.fileFormat.sampleRate
+        }
         guard let decoder else { return 0 }
         return decoder.durationSeconds
     }

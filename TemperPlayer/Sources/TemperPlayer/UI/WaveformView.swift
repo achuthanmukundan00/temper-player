@@ -2,13 +2,14 @@ import SwiftUI
 
 struct WaveformView: View {
     @EnvironmentObject var playerState: PlayerState
+    @Environment(\.uiScale) var uiScale
     @State private var waveformBars: [CGFloat] = []
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 4 * uiScale) {
             HStack {
                 Text("WAVEFORM")
-                    .font(.system(size: 8, design: .monospaced))
+                    .font(.system(size: 8 * uiScale, design: .monospaced))
                     .foregroundColor(Color(white: 0.25))
                     .tracking(1.5)
                 Spacer()
@@ -24,32 +25,32 @@ struct WaveformView: View {
                             .fill(barColor(for: i, total: bars.count, progress: geo.size.width))
                             .frame(
                                 width: max(1, (geo.size.width - CGFloat(bars.count)) / CGFloat(bars.count)),
-                                height: max(2, bars[i] * (geo.size.height - 8))
+                                height: max(2, bars[i] * (geo.size.height - 8 * uiScale))
                             )
                     }
                 }
                 .frame(maxHeight: .infinity, alignment: .center)
             }
-            .frame(height: 52)
+            .frame(height: 52 * uiScale)
             .background(Color(white: 0.02))
             .overlay(RoundedRectangle(cornerRadius: 1).stroke(Color(white: 0.06)))
 
             HStack(spacing: 0) {
                 Text(playerState.timeString)
-                    .font(.system(size: 8, design: .monospaced))
+                    .font(.system(size: 8 * uiScale, design: .monospaced))
                     .foregroundColor(Color(white: 0.2))
                 Spacer()
-                Text("0:15").font(.system(size: 8, design: .monospaced)).foregroundColor(Color(white: 0.15))
+                Text("0:15").font(.system(size: 8 * uiScale, design: .monospaced)).foregroundColor(Color(white: 0.15))
                 Spacer()
-                Text("0:30").font(.system(size: 8, design: .monospaced)).foregroundColor(Color(white: 0.15))
+                Text("0:30").font(.system(size: 8 * uiScale, design: .monospaced)).foregroundColor(Color(white: 0.15))
                 Spacer()
-                Text("0:45").font(.system(size: 8, design: .monospaced)).foregroundColor(Color(white: 0.15))
+                Text("0:45").font(.system(size: 8 * uiScale, design: .monospaced)).foregroundColor(Color(white: 0.15))
                 Spacer()
                 Text(playerState.durationString)
-                    .font(.system(size: 8, design: .monospaced))
+                    .font(.system(size: 8 * uiScale, design: .monospaced))
                     .foregroundColor(Color(white: 0.2))
             }
-            .padding(.horizontal, 4)
+            .padding(.horizontal, 4 * uiScale)
         }
     }
 

@@ -4,42 +4,56 @@ import CTemperPlayer
 struct InspectorView: View {
     @EnvironmentObject var library: Database
     @EnvironmentObject var playerState: PlayerState
+    @Environment(\.uiScale) var uiScale
+    @ObservedObject private var importService = ImportService.shared
     let hoveredTrackId: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(title: "BUFFER")
+        VStack(alignment: .leading, spacing: 8 * uiScale) {
+            SectionHeader(title: "BUFFER", uiScale: uiScale)
             if let track = displayedTrack {
                 Text(track.path)
-                    .font(.system(size: 8, design: .monospaced))
+                    .font(.system(size: 8 * uiScale, design: .monospaced))
                     .foregroundColor(Color(white: 0.4))
                     .lineLimit(3)
             } else {
                 Text("no buffer loaded")
-                    .font(.system(size: 8, design: .monospaced))
+                    .font(.system(size: 8 * uiScale, design: .monospaced))
                     .foregroundColor(Color(white: 0.2))
             }
 
-            SectionHeader(title: "STREAM")
+            SectionHeader(title: "STREAM", uiScale: uiScale)
             if let track = displayedTrack {
-                StreamInfoView(track: track)
+                StreamInfoView(track: track, uiScale: uiScale)
             } else {
-                Text("\u{2014}").font(.system(size: 9, design: .monospaced)).foregroundColor(Color(white: 0.2))
+                Text("\u{2014}").font(.system(size: 9 * uiScale, design: .monospaced)).foregroundColor(Color(white: 0.2))
             }
 
-            HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color(white: 0.1))
-                    .frame(width: 20, height: 20)
-                    .overlay(RoundedRectangle(cornerRadius: 1).stroke(Color(white: 0.06)))
-                Text("artwork").font(.system(size: 8, design: .monospaced)).foregroundColor(Color(white: 0.25))
+            if let track = displayedTrack, let data = importService.artworkCache[track.id],
+               let nsImage = NSImage(data: data) {
+                HStack(spacing: 6 * uiScale) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 60 * uiScale, height: 60 * uiScale)
+                        .cornerRadius(2)
+                    Text("artwork").font(.system(size: 8 * uiScale, design: .monospaced)).foregroundColor(Color(white: 0.25))
+                }
+            } else {
+                HStack(spacing: 6 * uiScale) {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color(white: 0.1))
+                        .frame(width: 20 * uiScale, height: 20 * uiScale)
+                        .overlay(RoundedRectangle(cornerRadius: 1).stroke(Color(white: 0.06)))
+                    Text("artwork").font(.system(size: 8 * uiScale, design: .monospaced)).foregroundColor(Color(white: 0.25))
+                }
             }
 
-            SectionHeader(title: "QUEUE")
-            VStack(alignment: .leading, spacing: 2) {
+            SectionHeader(title: "QUEUE", uiScale: uiScale)
+            VStack(alignment: .leading, spacing: 2 * uiScale) {
                 if let track = playerState.currentTrack {
-                    HStack(spacing: 4) {
-                        Text("\u{25B6}").foregroundColor(.white).font(.system(size: 8, design: .monospaced))
+                    HStack(spacing: 4 * uiScale) {
+                        Text("\u{25B6}").foregroundColor(.white).font(.system(size: 8 * uiScale, design: .monospaced))
                         Text(track.title ?? "untitled").foregroundColor(Color(white: 0.7))
                     }
                 }
@@ -50,21 +64,21 @@ struct InspectorView: View {
                     Text("  +\(playerState.queue.count - 3) more").foregroundColor(Color(white: 0.2))
                 }
             }
-            .font(.system(size: 9, design: .monospaced))
+            .font(.system(size: 9 * uiScale, design: .monospaced))
 
             Spacer()
 
             HStack {
                 Text("PID \(ProcessInfo.processInfo.processIdentifier)")
-                    .font(.system(size: 7, design: .monospaced))
+                    .font(.system(size: 7 * uiScale, design: .monospaced))
                 Spacer()
             }
             .foregroundColor(Color(white: 0.15))
-            .padding(.top, 4)
+            .padding(.top, 4 * uiScale)
             .overlay(Divider().frame(maxWidth: .infinity).foregroundColor(Color(white: 0.04)), alignment: .top)
         }
-        .padding(12)
-        .font(.system(size: 10, design: .monospaced))
+        .padding(12 * uiScale)
+        .font(.system(size: 10 * uiScale, design: .monospaced))
         .background(Color.black)
         .overlay(
             Rectangle().fill(Color(white: 0.06)).frame(width: 1).frame(maxWidth: .infinity, alignment: .leading)
@@ -79,46 +93,48 @@ struct InspectorView: View {
 
 struct SectionHeader: View {
     let title: String
+    let uiScale: CGFloat
     var body: some View {
         Text(title)
-            .font(.system(size: 8, design: .monospaced))
+            .font(.system(size: 8 * uiScale, design: .monospaced))
             .foregroundColor(Color(white: 0.35))
             .tracking(1.5)
-            .padding(.top, 4)
+            .padding(.top, 4 * uiScale)
     }
 }
 
 struct StreamInfoView: View {
     let track: Track
+    let uiScale: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            KeyValueRow(key: "format", value: track.format, color: .white)
-            KeyValueRow(key: "sample rate", value: formatNum(track.sampleRate), color: .white)
-            KeyValueRow(key: "bit depth", value: "\(track.bitDepth)", color: .white)
-            KeyValueRow(key: "channels", value: "\(track.channels)", color: .white)
-            KeyValueRow(key: "duration", value: durationString(track.duration), color: .white)
+            KeyValueRow(key: "format", value: track.format, color: .white, uiScale: uiScale)
+            KeyValueRow(key: "sample rate", value: formatNum(track.sampleRate), color: .white, uiScale: uiScale)
+            KeyValueRow(key: "bit depth", value: "\(track.bitDepth)", color: .white, uiScale: uiScale)
+            KeyValueRow(key: "channels", value: "\(track.channels)", color: .white, uiScale: uiScale)
+            KeyValueRow(key: "duration", value: durationString(track.duration), color: .white, uiScale: uiScale)
 
             Color(white: 0.08).frame(height: 1)
 
-            if let l = track.lufs { KeyValueRow(key: "loudness", value: String(format: "%.1f LUFS", l), color: .white) }
-            if let tp = track.truePeak { KeyValueRow(key: "true peak", value: String(format: "%.1f dBTP", tp), color: .white) }
-            if let l = track.lufs { KeyValueRow(key: "peak", value: String(format: "%.1f dB", l), color: .white) }
-            if let dr = track.dynamicRange { KeyValueRow(key: "dynamic", value: String(format: "%.1f dB", dr), color: .white) }
+            if let l = track.lufs { KeyValueRow(key: "loudness", value: String(format: "%.1f LUFS", l), color: .white, uiScale: uiScale) }
+            if let tp = track.truePeak { KeyValueRow(key: "true peak", value: String(format: "%.1f dBTP", tp), color: .white, uiScale: uiScale) }
+            if let l = track.lufs { KeyValueRow(key: "peak", value: String(format: "%.1f dB", l), color: .white, uiScale: uiScale) }
+            if let dr = track.dynamicRange { KeyValueRow(key: "dynamic", value: String(format: "%.1f dB", dr), color: .white, uiScale: uiScale) }
 
             Color(white: 0.08).frame(height: 1)
 
             if let pc = track.phaseCorrelation {
                 KeyValueRow(key: "phase", value: pc > 0.5 ? "ok" : (pc > 0 ? "warn" : "bad"),
-                          color: pc > 0.5 ? Color(red: 0.4, green: 0.8, blue: 0.4) : (pc > 0 ? Color(red: 0.9, green: 0.7, blue: 0.3) : Color(red: 0.9, green: 0.3, blue: 0.3)))
-                KeyValueRow(key: "corr", value: String(format: "%+.2f", pc), color: .white)
+                          color: pc > 0.5 ? Color(red: 0.4, green: 0.8, blue: 0.4) : (pc > 0 ? Color(red: 0.9, green: 0.7, blue: 0.3) : Color(red: 0.9, green: 0.3, blue: 0.3)), uiScale: uiScale)
+                KeyValueRow(key: "corr", value: String(format: "%+.2f", pc), color: .white, uiScale: uiScale)
             }
             if let dc = track.dcOffset {
                 let c = abs(dc) < 0.01 ? Color(white: 0.6) : Color(red: 0.9, green: 0.7, blue: 0.3)
-                KeyValueRow(key: "dc offset", value: String(format: "%+.3f%%", dc), color: c)
+                KeyValueRow(key: "dc offset", value: String(format: "%+.3f%%", dc), color: c, uiScale: uiScale)
             }
         }
-        .font(.system(size: 9, design: .monospaced))
+        .font(.system(size: 9 * uiScale, design: .monospaced))
     }
 
     private func formatNum(_ n: Int) -> String {
@@ -135,9 +151,10 @@ struct KeyValueRow: View {
     let key: String
     let value: String
     var color: Color = Color(white: 0.7)
+    let uiScale: CGFloat
     var body: some View {
         HStack(spacing: 0) {
-            Text(key).foregroundColor(Color(white: 0.35)).frame(width: 72, alignment: .trailing)
+            Text(key).foregroundColor(Color(white: 0.35)).frame(width: 72 * uiScale, alignment: .trailing)
             Text(" ")
             Text(value).foregroundColor(color)
         }
