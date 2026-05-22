@@ -9,6 +9,7 @@ class AudioManager: ObservableObject {
     private var avAudioFile: AVAudioFile?
     private var isAVFoundationTrack = false
     @Published var isPlaying = false
+    @Published var currentTime: Double = 0
 
     private var currentTrackPath: String?
     private var currentFrame: Int64 = 0
@@ -17,10 +18,29 @@ class AudioManager: ObservableObject {
 
     private let decoderFormats: Set<String> = ["flac", "wav"]
 
+    private var timeTimer: Timer?
+    private var seekOffset: Double = 0
+    private var playbackStartTime: Date?
+
     init() {
         engine.attach(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
         try? engine.start()
+    }
+
+    private func startTimeTimer() {
+        timeTimer?.invalidate()
+        playbackStartTime = Date()
+        timeTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self, let start = self.playbackStartTime else { return }
+            self.currentTime = self.seekOffset + Date().timeIntervalSince(start)
+        }
+    }
+
+    private func stopTimeTimer() {
+        timeTimer?.invalidate()
+        timeTimer = nil
+        playbackStartTime = nil
     }
 
     func play(track path: String) {
@@ -34,6 +54,10 @@ class AudioManager: ObservableObject {
         } else {
             playViaAVFoundation(path: path)
         }
+
+        seekOffset = 0
+        currentTime = 0
+        startTimeTimer()
     }
 
     private func playViaDecoder(path: String) {
@@ -116,6 +140,8 @@ class AudioManager: ObservableObject {
 
     func pause() {
         if playerNode.isPlaying {
+            seekOffset = currentTime
+            stopTimeTimer()
             playerNode.pause()
             isPlaying = false
         }
@@ -123,6 +149,11 @@ class AudioManager: ObservableObject {
 
     func resume() {
         if !playerNode.isPlaying && (decoder != nil || avAudioFile != nil) {
+            playbackStartTime = Date()
+            timeTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                guard let self, let start = self.playbackStartTime else { return }
+                self.currentTime = self.seekOffset + Date().timeIntervalSince(start)
+            }
             playerNode.play()
             isPlaying = true
         }
@@ -130,6 +161,7 @@ class AudioManager: ObservableObject {
 
     func stop() {
         playerNode.stop()
+        stopTimeTimer()
         decoder?.close()
         decoder = nil
         avAudioFile = nil
@@ -137,10 +169,16 @@ class AudioManager: ObservableObject {
         currentFrame = 0
         isAVFoundationTrack = false
         isPlaying = false
+        currentTime = 0
+        seekOffset = 0
     }
 
     func seek(to time: Double) {
         guard let path = currentTrackPath else { return }
+
+        seekOffset = time
+        currentTime = time
+        playbackStartTime = Date()
 
         if isAVFoundationTrack {
             guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else { return }

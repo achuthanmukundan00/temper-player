@@ -9,14 +9,22 @@ struct WorkspaceView: View {
     @State private var searchText = ""
     @ObservedObject private var importService = ImportService.shared
 
+    private var headerTitle: String {
+        switch activeMode {
+        case .library: return "LIBRARY"
+        case .playlists: return "PLAYLISTS"
+        default: return "~/Music"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(activeMode == .playlists ? "PLAYLISTS" : "~/Music")
+                Text(headerTitle)
                     .font(.system(size: 9 * uiScale, design: .monospaced))
                     .foregroundColor(Color(white: 0.4))
 
-                if activeMode != .playlists {
+                if activeMode == .files {
                     TextField("filter...", text: $searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 9 * uiScale, design: .monospaced))
@@ -30,18 +38,24 @@ struct WorkspaceView: View {
                         .font(.system(size: 8 * uiScale, design: .monospaced))
                         .foregroundColor(Color(red: 0.4, green: 0.8, blue: 0.4))
                 }
-                Text(activeMode == .playlists ? "" : "\(library.tracks.count) files")
-                    .font(.system(size: 9 * uiScale, design: .monospaced))
-                    .foregroundColor(Color(white: 0.25))
+                if activeMode == .files {
+                    Text("\(library.tracks.count) files")
+                        .font(.system(size: 9 * uiScale, design: .monospaced))
+                        .foregroundColor(Color(white: 0.25))
+                }
             }
             .padding(.horizontal, 16 * uiScale)
             .padding(.vertical, 8 * uiScale)
             .background(Color.black)
 
-            if activeMode == .playlists {
+            switch activeMode {
+            case .playlists:
                 PlaylistListView(searchText: $searchText)
                     .frame(maxHeight: .infinity)
-            } else {
+            case .library:
+                LibraryBrowserView()
+                    .frame(maxHeight: .infinity)
+            default:
                 FileTreeView(hoveredTrackId: $hoveredTrackId, searchText: searchText)
                     .frame(maxHeight: .infinity)
             }
