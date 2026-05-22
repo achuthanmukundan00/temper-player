@@ -33,6 +33,7 @@ export fn decode_open(path: [*:0]const u8) ?*anyopaque {
 }
 
 export fn decode_read_frames(h: *anyopaque, buf: [*]f32, frame_count: i32) i32 {
+    if (frame_count <= 0) return 0;
     const decoder: *Decoder = @ptrCast(@alignCast(h));
     return decoder.readFrames(buf[0..@intCast(frame_count)], frame_count);
 }
@@ -55,7 +56,10 @@ export fn decode_get_info(h: *anyopaque) SampleFormat {
         .sample_rate = decoder.sample_rate,
         .channels = decoder.channels,
         .bit_depth = decoder.bit_depth,
-        .duration_seconds = @as(f64, @floatFromInt(decoder.total_pcm_frames)) / @as(f64, @floatFromInt(decoder.sample_rate)),
+        .duration_seconds = if (decoder.sample_rate > 0)
+            @as(f64, @floatFromInt(decoder.total_pcm_frames)) / @as(f64, @floatFromInt(decoder.sample_rate))
+        else
+            0.0,
     };
 }
 
