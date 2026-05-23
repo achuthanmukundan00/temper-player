@@ -47,6 +47,9 @@ pub const Decoder = struct {
     }
 
     pub fn readFrames(self: *Decoder, buf: []f32, frame_count: i32) i32 {
+        if (buf.len < @as(usize, @intCast(frame_count)) * @as(usize, @intCast(self.channels))) {
+            @panic("readFrames: buffer too small for frame_count * channels");
+        }
         switch (self.format) {
             .flac => if (self.flac) |f| {
                 return @intCast(c.drflac_read_pcm_frames_f32(
