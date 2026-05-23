@@ -83,7 +83,7 @@ struct FileTreeView: View {
                             }
                         }
                     }
-                    .padding(.vertical, 4 * uiScale)
+                    .padding(.vertical, 3 * uiScale)
                 }
             }
         }
@@ -174,7 +174,7 @@ struct FileTreeRow: View {
 
             VStack(alignment: .leading, spacing: 1 * layout.uiScale) {
                 Text(track.title ?? fileName)
-                    .foregroundColor(isPlaying ? .white : Color(white: 0.78))
+                    .foregroundColor(isPlaying ? .white : Color(white: 0.68))
                     .lineLimit(1)
                 if track.title != nil && track.title != fileName {
                     Text(fileName)
@@ -214,7 +214,7 @@ struct FileTreeRow: View {
         .font(.system(size: layout.rowFontSize, design: .monospaced))
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .padding(.vertical, 8 * layout.uiScale)
+        .padding(.vertical, 6 * layout.uiScale)
         .padding(.horizontal, layout.horizontalPadding)
         .background(rowBg)
     }

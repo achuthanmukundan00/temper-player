@@ -15,6 +15,8 @@ private struct AnalyzerSnapshot {
     let rms: Float
     let spectrumBars: [Float]
     let waveformBands: [[Float]]
+    let waveformPositive: [Float]
+    let waveformNegative: [Float]
     let waveformScrollPhase: Float
     let goniometerPoints: [CGPoint]
     let correlation: Float
@@ -84,6 +86,11 @@ private struct LatencyProbeState {
     var tapFrameCounts: [Double] = []
     var droppedTaps = 0
     var coalescedPublishes = 0
+    var enqueuedSnapshots = 0
+    var displayTicks = 0
+    var displaySchedules = 0
+    var displaySkips = 0
+    var renderFrames = 0
     var lastReportTimeNs = DispatchTime.now().uptimeNanoseconds
 
     mutating func recordPublish(snapshot: AnalyzerSnapshot, mainTimeNs: UInt64) -> String? {
@@ -102,11 +109,17 @@ private struct LatencyProbeState {
             tapFrameCounts.removeAll(keepingCapacity: true)
             droppedTaps = 0
             coalescedPublishes = 0
+            enqueuedSnapshots = 0
+            displayTicks = 0
+            displaySchedules = 0
+            displaySkips = 0
+            renderFrames = 0
             lastReportTimeNs = mainTimeNs
         }
 
         return """
-        [analyzer latency] frames=\(callbackToMainMs.count) dropped_taps=\(droppedTaps) coalesced_publishes=\(coalescedPublishes)
+        [analyzer latency] frames=\(callbackToMainMs.count) enqueued=\(enqueuedSnapshots) dropped_taps=\(droppedTaps) coalesced_publishes=\(coalescedPublishes)
+          display ticks     ticks=\(displayTicks) scheduled=\(displaySchedules) skipped=\(displaySkips) rendered=\(renderFrames)
           tap frame count    \(frameSummary(tapFrameCounts))
           callback->analysis \(summary(callbackToAnalysisMs))
           analysis duration  \(summary(analysisDurationMs))
@@ -200,18 +213,22 @@ final class RealtimeAnalyzer: ObservableObject {
     private var fftHistoryRing: [Float]
     private var fftHistoryWriteIndex = 0
     private var fftHistoryCount = 0
-    private var lowpass200State: Float = 0
-    private var lowpass350State: Float = 0
-    private var lowpass900State: Float = 0
+    private var lowpass250State: Float = 0
+    private var lowpass600State: Float = 0
+    private var lowpass1300State: Float = 0
     private var lowpass5000State: Float = 0
-    private var subAlpha: Float = 0
-    private var lowMidAlpha: Float = 0
-    private var midAlpha: Float = 0
-    private var upperMidAlpha: Float = 0
+    private var lowpass250Alpha: Float = 0
+    private var lowpass600Alpha: Float = 0
+    private var lowpass1300Alpha: Float = 0
+    private var lowpass5000Alpha: Float = 0
     private var framesPerWaveformPoint = 147
     private var waveformScrollPhase: Float = 0
     private var waveformHistoryBands: [[Float]] = [[], [], [], [], []]
+    private var waveformPositiveHistory: [Float] = []
+    private var waveformNegativeHistory: [Float] = []
     private var waveformBucketPeaks: [Float] = [0, 0, 0, 0, 0]
+    private var waveformBucketPositive: Float = 0
+    private var waveformBucketNegative: Float = 0
     private var waveformBucketFrames = 0
 
     // Sample rate from the engine's output format
@@ -226,6 +243,9 @@ final class RealtimeAnalyzer: ObservableObject {
     private(set) var spectrogramLines: [[Float]] = []
     private(set) var spectrumBars: [Float] = []
     private(set) var waveformBands: [[Float]] = [[], [], [], [], []]
+    private(set) var waveformPositive: [Float] = []
+    private(set) var waveformNegative: [Float] = []
+    var waveformVisiblePointCount: Int { waveformPointCount }
     private(set) var waveformPhase: Float = 0
     private(set) var goniometerPoints: [CGPoint] = []
     private(set) var correlation: Float = 0
@@ -233,9 +253,10 @@ final class RealtimeAnalyzer: ObservableObject {
     private(set) var bandCorrelations: [Float] = [0, 0, 0]
     private(set) var peak: Float = 0
     private(set) var rms: Float = 0
+    var isFrozen = false
 
     // Display pacing
-    private let displayDrawScale = 0.90
+    private let displayDrawScale = 1.0
     private let visualSmoothing: Float = 0.90
     private let processingQueue = DispatchQueue(label: "com.temperplayer.analyzer", qos: .userInitiated)
     private let processingState = OSAllocatedUnfairLock<Bool>(initialState: false)
@@ -299,6 +320,8 @@ final class RealtimeAnalyzer: ObservableObject {
         for band in waveformHistoryBands.indices {
             waveformHistoryBands[band].reserveCapacity(waveformPointCount)
         }
+        waveformPositiveHistory.reserveCapacity(waveformPointCount)
+        waveformNegativeHistory.reserveCapacity(waveformPointCount)
         configureAnalysis(for: sampleRate)
     }
 
@@ -333,12 +356,16 @@ final class RealtimeAnalyzer: ObservableObject {
         fftHistoryWriteIndex = 0
         fftHistoryCount = 0
         waveformHistoryBands = [[], [], [], [], []]
+        waveformPositiveHistory = []
+        waveformNegativeHistory = []
         waveformBucketPeaks = [0, 0, 0, 0, 0]
+        waveformBucketPositive = 0
+        waveformBucketNegative = 0
         waveformBucketFrames = 0
         waveformScrollPhase = 0
-        lowpass200State = 0
-        lowpass350State = 0
-        lowpass900State = 0
+        lowpass250State = 0
+        lowpass600State = 0
+        lowpass1300State = 0
         lowpass5000State = 0
         spectrumDisplayBars = [Float](repeating: 0, count: spectrumBarCount)
         spectrumLongEnergyCache = [Float](repeating: 1e-12, count: spectrumBarCount)
@@ -358,6 +385,8 @@ final class RealtimeAnalyzer: ObservableObject {
             self.spectrogramLines = []
             self.spectrumBars = []
             self.waveformBands = [[], [], [], [], []]
+            self.waveformPositive = []
+            self.waveformNegative = []
             self.waveformPhase = 0
             self.goniometerPoints = []
             self.correlation = 0
@@ -513,6 +542,8 @@ final class RealtimeAnalyzer: ObservableObject {
             rms: sqrt(sq),
             spectrumBars: sBars,
             waveformBands: waveBands,
+            waveformPositive: waveformPositiveHistory,
+            waveformNegative: waveformNegativeHistory,
             waveformScrollPhase: waveformScrollPhase,
             goniometerPoints: goniometerSamples,
             correlation: corr,
@@ -522,6 +553,7 @@ final class RealtimeAnalyzer: ObservableObject {
     }
 
     private func enqueuePublish(_ snapshot: AnalyzerSnapshot) {
+        recordEnqueuedSnapshot()
         let dropped = visualFrameQueue.withLock { queue in
             queue.push(snapshot)
         }
@@ -531,17 +563,21 @@ final class RealtimeAnalyzer: ObservableObject {
     }
 
     private func publishSnapshot(_ snapshot: AnalyzerSnapshot) {
+        guard !isFrozen else { return }
         objectWillChange.send()
         peak = smoothScalar(current: peak, target: snapshot.peak)
         rms = smoothScalar(current: rms, target: snapshot.rms)
         smoothArray(&spectrumBars, target: snapshot.spectrumBars)
         waveformBands = snapshot.waveformBands
+        waveformPositive = snapshot.waveformPositive
+        waveformNegative = snapshot.waveformNegative
         waveformPhase = snapshot.waveformScrollPhase
         goniometerPoints = snapshot.goniometerPoints
         correlation = smoothScalar(current: correlation, target: snapshot.correlation)
         smoothArray(&bandLevels, target: snapshot.bandLevels)
         bandCorrelations = [correlation, correlation, correlation]
 
+        recordRenderFrame()
         recordPublish(snapshot: snapshot, mainTimeNs: DispatchTime.now().uptimeNanoseconds)
     }
 
@@ -592,21 +628,12 @@ final class RealtimeAnalyzer: ObservableObject {
     }
 
     private func scheduleDisplayTick() {
-        let shouldDraw = displayDrawDebt.withLock { debt in
-            debt += displayDrawScale
-            if debt >= 1 {
-                debt -= 1
-                return true
-            }
-            return false
-        }
-        guard shouldDraw else { return }
-
         let shouldSchedule = displayTickScheduled.withLock { scheduled in
             if scheduled { return false }
             scheduled = true
             return true
         }
+        recordDisplayTick(scheduled: shouldSchedule)
         guard shouldSchedule else { return }
 
         DispatchQueue.main.async { [weak self] in
@@ -636,10 +663,19 @@ final class RealtimeAnalyzer: ObservableObject {
         }
         guard let snapshot else {
             visualFrameDebt = 0
+            publishDisplayOnlyFrame(elapsedSeconds: elapsedSeconds)
             return
         }
 
         publishSnapshot(snapshot)
+    }
+
+    private func publishDisplayOnlyFrame(elapsedSeconds: Double) {
+        guard !isFrozen, !waveformBands.isEmpty else { return }
+        objectWillChange.send()
+        let phaseAdvance = Float(Double(max(1, sampleRate)) * elapsedSeconds / Double(max(1, framesPerWaveformPoint)))
+        waveformPhase = (waveformPhase + phaseAdvance).truncatingRemainder(dividingBy: 1)
+        recordRenderFrame()
     }
 
     private func appendFFTInput(samples: [Float], count: Int) {
@@ -869,29 +905,38 @@ final class RealtimeAnalyzer: ObservableObject {
 
         for index in 0..<count {
             let sample = samples[index]
-            lowpass200State += subAlpha * (sample - lowpass200State)
-            lowpass350State += lowMidAlpha * (sample - lowpass350State)
-            lowpass900State += midAlpha * (sample - lowpass900State)
-            lowpass5000State += upperMidAlpha * (sample - lowpass5000State)
+            let signedSample = max(-1, min(1, sample * 1.65))
+            lowpass250State += lowpass250Alpha * (sample - lowpass250State)
+            lowpass600State += lowpass600Alpha * (sample - lowpass600State)
+            lowpass1300State += lowpass1300Alpha * (sample - lowpass1300State)
+            lowpass5000State += lowpass5000Alpha * (sample - lowpass5000State)
 
-            let subSample = lowpass200State                               // 0–200 Hz
-            let lowMidSample = lowpass350State - lowpass200State           // 200–350 Hz
-            let midSample = lowpass900State - lowpass350State              // 350–900 Hz
-            let upperMidSample = lowpass5000State - lowpass900State        // 900–5000 Hz
-            let highSample = sample - lowpass5000State                     // 5000+ Hz
+            let redSample = lowpass250State                              // <250 Hz
+            let orangeSample = lowpass600State - lowpass250State          // 250-600 Hz
+            let greenSample = lowpass1300State - lowpass600State          // 600 Hz-1.3 kHz
+            let cyanSample = lowpass5000State - lowpass1300State          // 1.3-5 kHz
+            let blueSample = sample - lowpass5000State                    // 5 kHz+
 
-            waveformBucketPeaks[0] = max(waveformBucketPeaks[0], waveformAmplitude(subSample, gain: 1.8))
-            waveformBucketPeaks[1] = max(waveformBucketPeaks[1], waveformAmplitude(lowMidSample, gain: 2.5))
-            waveformBucketPeaks[2] = max(waveformBucketPeaks[2], waveformAmplitude(midSample, gain: 3.0))
-            waveformBucketPeaks[3] = max(waveformBucketPeaks[3], waveformAmplitude(upperMidSample, gain: 2.0))
-            waveformBucketPeaks[4] = max(waveformBucketPeaks[4], waveformAmplitude(highSample, gain: 4.5))
+            waveformBucketPeaks[0] = max(waveformBucketPeaks[0], waveformAmplitude(redSample, gain: 1))
+            waveformBucketPeaks[1] = max(waveformBucketPeaks[1], waveformAmplitude(orangeSample, gain: 1))
+            waveformBucketPeaks[2] = max(waveformBucketPeaks[2], waveformAmplitude(greenSample, gain: 1))
+            waveformBucketPeaks[3] = max(waveformBucketPeaks[3], waveformAmplitude(cyanSample, gain: 1))
+            waveformBucketPeaks[4] = max(waveformBucketPeaks[4], waveformAmplitude(blueSample, gain: 1))
+            waveformBucketPositive = max(waveformBucketPositive, signedSample)
+            waveformBucketNegative = min(waveformBucketNegative, signedSample)
             waveformBucketFrames += 1
 
             if waveformBucketFrames >= framesPerWaveformPoint {
-                appendWaveformPoint(waveformBucketPeaks)
+                appendWaveformPoint(
+                    waveformBucketPeaks,
+                    positive: waveformBucketPositive,
+                    negative: waveformBucketNegative
+                )
                 for band in waveformBucketPeaks.indices {
                     waveformBucketPeaks[band] = 0
                 }
+                waveformBucketPositive = 0
+                waveformBucketNegative = 0
                 waveformBucketFrames = 0
             }
         }
@@ -906,11 +951,11 @@ final class RealtimeAnalyzer: ObservableObject {
 
     private func configureAnalysis(for rate: Float) {
         let safeRate = max(1, rate)
-        subAlpha = 1 - exp(-2 * .pi * 200 / safeRate)
-        lowMidAlpha = 1 - exp(-2 * .pi * 350 / safeRate)
-        midAlpha = 1 - exp(-2 * .pi * 900 / safeRate)
-        upperMidAlpha = 1 - exp(-2 * .pi * 5_000 / safeRate)
-        framesPerWaveformPoint = max(32, Int(safeRate / 180))
+        lowpass250Alpha = 1 - exp(-2 * .pi * 250 / safeRate)
+        lowpass600Alpha = 1 - exp(-2 * .pi * 600 / safeRate)
+        lowpass1300Alpha = 1 - exp(-2 * .pi * 1_300 / safeRate)
+        lowpass5000Alpha = 1 - exp(-2 * .pi * 5_000 / safeRate)
+        framesPerWaveformPoint = max(32, Int(safeRate / 110))
         configureSpectrumMapping(for: safeRate)
     }
 
@@ -953,7 +998,7 @@ final class RealtimeAnalyzer: ObservableObject {
         return x * x * (3 - 2 * x)
     }
 
-    private func appendWaveformPoint(_ point: [Float]) {
+    private func appendWaveformPoint(_ point: [Float], positive: Float, negative: Float) {
         if waveformHistoryBands.count != 5 {
             waveformHistoryBands = [[], [], [], [], []]
         }
@@ -963,6 +1008,15 @@ final class RealtimeAnalyzer: ObservableObject {
             if waveformHistoryBands[band].count > waveformPointCount {
                 waveformHistoryBands[band].removeFirst(waveformHistoryBands[band].count - waveformPointCount)
             }
+        }
+
+        waveformPositiveHistory.append(max(0, min(1, positive)))
+        waveformNegativeHistory.append(min(0, max(-1, negative)))
+        if waveformPositiveHistory.count > waveformPointCount {
+            waveformPositiveHistory.removeFirst(waveformPositiveHistory.count - waveformPointCount)
+        }
+        if waveformNegativeHistory.count > waveformPointCount {
+            waveformNegativeHistory.removeFirst(waveformNegativeHistory.count - waveformPointCount)
         }
     }
 
@@ -978,6 +1032,28 @@ final class RealtimeAnalyzer: ObservableObject {
     private func recordCoalescedPublish() {
         guard latencyProbesEnabled else { return }
         latencyProbeState.withLock { $0.coalescedPublishes += 1 }
+    }
+
+    private func recordEnqueuedSnapshot() {
+        guard latencyProbesEnabled else { return }
+        latencyProbeState.withLock { $0.enqueuedSnapshots += 1 }
+    }
+
+    private func recordDisplayTick(scheduled: Bool) {
+        guard latencyProbesEnabled else { return }
+        latencyProbeState.withLock {
+            $0.displayTicks += 1
+            if scheduled {
+                $0.displaySchedules += 1
+            } else {
+                $0.displaySkips += 1
+            }
+        }
+    }
+
+    private func recordRenderFrame() {
+        guard latencyProbesEnabled else { return }
+        latencyProbeState.withLock { $0.renderFrames += 1 }
     }
 
     private func recordPublish(snapshot: AnalyzerSnapshot, mainTimeNs: UInt64) {

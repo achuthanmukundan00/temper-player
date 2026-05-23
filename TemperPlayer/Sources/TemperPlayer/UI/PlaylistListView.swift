@@ -231,7 +231,7 @@ struct PlaylistListView: View {
                 .frame(width: 48 * uiScale, alignment: .trailing)
         }
         .padding(.horizontal, 12 * uiScale)
-        .padding(.vertical, 8 * uiScale)
+        .padding(.vertical, 6 * uiScale)
         .background(rowBackground(isPlaying: isPlaying, isSelected: isSelected, index: index))
         .contentShape(Rectangle())
         .onTapGesture {
@@ -261,7 +261,7 @@ struct PlaylistListView: View {
 
     private func rowBackground(isPlaying: Bool, isSelected: Bool, index: Int) -> Color {
         if isPlaying { return Color(red: 0.11, green: 0.13, blue: 0.12) }
-        if isSelected { return Color.white.opacity(0.055) }
+        if isSelected { return Color(red: 0.13, green: 0.13, blue: 0.18) }
         return index.isMultiple(of: 2) ? Color(white: 0.035) : Color(white: 0.048)
     }
 

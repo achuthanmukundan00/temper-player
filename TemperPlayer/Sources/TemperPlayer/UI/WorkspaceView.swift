@@ -50,7 +50,7 @@ struct WorkspaceView: View {
                 }
             }
             .padding(.horizontal, 16 * uiScale)
-            .padding(.vertical, 8 * uiScale)
+            .padding(.vertical, 6 * uiScale)
             .background(Color.black)
 
             switch activeMode {
@@ -128,7 +128,7 @@ struct WorkspaceView: View {
                 .padding(.horizontal, 12 * uiScale)
             }
             .padding(.top, 6 * uiScale)
-            .padding(.bottom, 38 * uiScale)
+            .padding(.bottom, 28 * uiScale)
             .background(Color.black)
             .overlay(Rectangle().fill(Color(white: 0.06)).frame(height: 1), alignment: .top)
         }

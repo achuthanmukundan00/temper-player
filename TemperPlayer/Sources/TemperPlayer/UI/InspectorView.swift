@@ -23,7 +23,7 @@ struct InspectorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12 * uiScale) {
+                VStack(alignment: .leading, spacing: 10 * uiScale) {
                     nowSection
 
                     if let track = displayedTrack {
@@ -41,6 +41,7 @@ struct InspectorView: View {
                     queueSection
                 }
                 .padding(12 * uiScale)
+                .padding(.bottom, 34 * uiScale)
             }
 
             Spacer(minLength: 0)
@@ -453,8 +454,7 @@ private struct SignalInfoView: View {
                 KeyValueRow(key: "dynamic", value: String(format: "%.1f dB", dr), color: .white, uiScale: uiScale)
             }
             if let pc = track.phaseCorrelation {
-                KeyValueRow(key: "phase", value: phaseLabel(pc), color: phaseColor(pc), uiScale: uiScale)
-                KeyValueRow(key: "corr", value: String(format: "%+.2f", pc), color: .white, uiScale: uiScale)
+                KeyValueRow(key: "phase", value: "\(phaseLabel(pc)) (\(String(format: "%+.2f", pc)))", color: phaseColor(pc), uiScale: uiScale)
             }
             if let dc = track.dcOffset {
                 KeyValueRow(key: "dc offset", value: String(format: "%+.3f%%", dc), color: abs(dc) < 0.01 ? Color(white: 0.65) : Color(red: 0.9, green: 0.7, blue: 0.3), uiScale: uiScale)
@@ -517,6 +517,6 @@ struct KeyValueRow: View {
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(.system(size: 9 * uiScale, design: .monospaced))
+        .font(.system(size: 8 * uiScale, design: .monospaced))
     }
 }
