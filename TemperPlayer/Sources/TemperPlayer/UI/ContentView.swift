@@ -12,23 +12,46 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let inspectorWidth = min(260 * uiScale, max(190 * uiScale, geo.size.width * 0.24))
+            let width = geo.size.width
+            let inspectorWidth = min(260 * uiScale, max(190 * uiScale, width * 0.24))
 
-            HStack(spacing: 0) {
-                GlyphSpine(activeMode: $activeMode)
+            if width < 320 {
+                SuperCompactPlayerView()
+                    .background(WindowActivationView())
+            } else if width < 580 {
+                CompactPlayerView()
+                    .background(WindowActivationView())
+            } else if width < 800 {
+                // Medium: no inspector, no visualizers
+                HStack(spacing: 0) {
+                    GlyphSpine(activeMode: $activeMode)
 
-                WorkspaceView(hoveredTrackId: $hoveredTrackId, activeMode: $activeMode)
-                    .frame(maxWidth: .infinity)
-                    .layoutPriority(1)
+                    WorkspaceView(hoveredTrackId: $hoveredTrackId, activeMode: $activeMode, showVisualizers: false)
+                        .frame(maxWidth: .infinity)
+                        .layoutPriority(1)
+                }
+                .overlay(alignment: .bottom) {
+                    TransportBar()
+                        .frame(height: 34 * uiScale)
+                }
+                .background(WindowActivationView())
+            } else {
+                HStack(spacing: 0) {
+                    GlyphSpine(activeMode: $activeMode)
 
-                InspectorView(hoveredTrackId: hoveredTrackId)
-                    .frame(width: inspectorWidth)
+                    WorkspaceView(hoveredTrackId: $hoveredTrackId, activeMode: $activeMode, showVisualizers: true)
+                        .frame(maxWidth: .infinity)
+                        .layoutPriority(1)
+
+                    InspectorView(hoveredTrackId: hoveredTrackId)
+                        .frame(width: inspectorWidth)
+                }
+                .overlay(alignment: .bottom) {
+                    TransportBar()
+                        .frame(height: 34 * uiScale)
+                }
+                .background(WindowActivationView())
             }
-            .overlay(alignment: .bottom) {
-                TransportBar()
-                    .frame(height: 34 * uiScale)
-            }
-            .background(WindowActivationView())
         }
         .background(Color.black)
         .onAppear {
