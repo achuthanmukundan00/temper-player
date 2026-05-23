@@ -3,7 +3,7 @@ import SwiftUI
 struct LibraryBrowserView: View {
     @EnvironmentObject var library: Database
     @EnvironmentObject var playerState: PlayerState
-    @EnvironmentObject var audioManager: AudioManager
+    @EnvironmentObject var playback: PlaybackController
     @Environment(\.uiScale) var uiScale
     @State private var selectedArtist: String?
     @State private var selectedAlbum: String?
@@ -111,7 +111,18 @@ struct LibraryBrowserView: View {
                                     .padding(.leading, 32 * uiScale)
                                     .padding(.trailing, 8 * uiScale)
                                     .onTapGesture(count: 2) {
-                                        playTrack(track)
+                                        playback.play(track: track, context: album.tracks, title: album.name)
+                                    }
+                                    .contextMenu {
+                                        Button("Play") {
+                                            playback.play(track: track, context: album.tracks, title: album.name)
+                                        }
+                                        Button("Play Next") { playback.enqueueNext(track) }
+                                        Button("Add to Queue") { playback.enqueue(track) }
+                                        Divider()
+                                        Button("Show in Finder") {
+                                            NSWorkspace.shared.selectFile(track.path, inFileViewerRootedAtPath: "")
+                                        }
                                     }
                                 }
                             }
@@ -124,13 +135,5 @@ struct LibraryBrowserView: View {
             .padding(4 * uiScale)
         }
         .font(.system(size: 10 * uiScale, design: .monospaced))
-    }
-
-    private func playTrack(_ track: Track) {
-        playerState.currentTrack = track
-        playerState.duration = track.duration
-        playerState.currentTime = 0
-        audioManager.play(track: track.path)
-        playerState.isPlaying = true
     }
 }
