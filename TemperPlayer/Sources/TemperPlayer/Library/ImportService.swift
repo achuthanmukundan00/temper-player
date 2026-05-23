@@ -2,22 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import CTemperPlayer
 import AVFoundation
-
-struct ImportDropDelegate: DropDelegate {
-    func performDrop(info: DropInfo) -> Bool {
-        let providers = info.itemProviders(for: [.fileURL])
-        for provider in providers {
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
-                DispatchQueue.main.async {
-                    ImportService.shared.importTrack(url: url)
-                }
-            }
-        }
-        return true
-    }
-}
+import os
 
 class ImportService: ObservableObject {
     static let shared = ImportService()
@@ -28,18 +13,71 @@ class ImportService: ObservableObject {
     @Published var isImporting = false
     @Published var importedCount = 0
     @Published var foundCount = 0
-    var artworkCache: [String: Data] = [:]
 
-    private var database: Database!
+    // Thread-safe artwork cache using os_unfair_lock
+    private var artworkCache: [String: Data] = [:]
+    private let artworkLock = OSAllocatedUnfairLock()
+
+    func artwork(for trackId: String) -> Data? {
+        artworkLock.withLock { artworkCache[trackId] }
+    }
+
+    private var database: Database?
 
     func setDatabase(_ db: Database) {
         database = db
+        loadArtworkCache()
+    }
+
+    func batchUpdateArtwork(trackIds: [String], from url: URL) {
+        _ = url.startAccessingSecurityScopedResource()
+        defer { url.stopAccessingSecurityScopedResource() }
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+        artworkLock.withLock {
+            for id in trackIds {
+                artworkCache[id] = data
+            }
+        }
+        for id in trackIds {
+            persistArtwork(data, id: id)
+        }
+        Task { @MainActor in self.objectWillChange.send() }
+    }
+
+    func updateArtwork(trackId: String, from url: URL) {
+        _ = url.startAccessingSecurityScopedResource()
+        defer { url.stopAccessingSecurityScopedResource() }
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+        artworkLock.withLock { artworkCache[trackId] = data }
+        persistArtwork(data, id: trackId)
+        Task { @MainActor in self.objectWillChange.send() }
+    }
+
+    private func persistArtwork(_ data: Data, id: String) {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".temperplayer/artwork")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent("\(id).jpg")
+        try? data.write(to: dest)
+    }
+
+    private func loadArtworkCache() {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".temperplayer/artwork")
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil
+        ) else { return }
+        for file in files where file.pathExtension == "jpg" {
+            let id = file.deletingPathExtension().lastPathComponent
+            if let data = try? Data(contentsOf: file) {
+                artworkLock.withLock { artworkCache[id] = data }
+            }
+        }
     }
 
     func importTrack(url: URL) {
         let path = url.path
         let ext = url.pathExtension.lowercased()
-
         guard supportedExtensions.contains(ext) else { return }
 
         let fileManager = FileManager.default
@@ -48,7 +86,7 @@ class ImportService: ObservableObject {
 
         let isDecoderFormat = decoderExtensions.contains(ext)
 
-        var meta: (title: String?, artist: String?, album: String?)
+        var meta: MetadataJSON
         var duration: Double = 0
         var sampleRate: Int = 0
         var bitDepth: Int = 0
@@ -62,8 +100,7 @@ class ImportService: ObservableObject {
         if isDecoderFormat {
             // Zig decoder path: metadata + mastering + duration
             let metaJSON = DecoderBridge.readMetadata(path: path)
-            let parsed = parseMetadata(json: metaJSON)
-            meta = (parsed.title, parsed.artist, parsed.album)
+            meta = parseMetadata(json: metaJSON)
 
             mastering = DecoderBridge.readMastering(path: path)
 
@@ -84,6 +121,12 @@ class ImportService: ObservableObject {
                 var aTitle: String?
                 var aArtist: String?
                 var aAlbum: String?
+                var aAlbumArtist: String?
+                var aGenre: String?
+                var aYear: Int?
+                var aTrackNo: Int?
+                var aDiscNo: Int?
+                var artworkData: Data?
 
                 let commonMeta = try? await asset.load(.commonMetadata)
                 for item in commonMeta ?? [] {
@@ -92,6 +135,25 @@ class ImportService: ObservableObject {
                     if key == .commonKeyTitle { aTitle = val as? String }
                     else if key == .commonKeyArtist { aArtist = val as? String }
                     else if key == .commonKeyAlbumName { aAlbum = val as? String }
+                    else if key == .commonKeyArtwork { artworkData = val as? Data }
+                }
+
+                let allMeta = try? await asset.load(.metadata)
+                for item in allMeta ?? [] {
+                    let keyText = metadataKeyText(item)
+                    guard let stringValue = await metadataString(from: item) else { continue }
+
+                    if keyText.contains("albumartist") || keyText.contains("album artist") {
+                        aAlbumArtist = aAlbumArtist ?? stringValue
+                    } else if keyText.contains("genre") {
+                        aGenre = aGenre ?? stringValue
+                    } else if keyText.contains("tracknumber") || keyText.contains("track number") || keyText.contains("trkn") {
+                        aTrackNo = aTrackNo ?? parseLeadingInt(stringValue)
+                    } else if keyText.contains("discnumber") || keyText.contains("disc number") || keyText.contains("disk") {
+                        aDiscNo = aDiscNo ?? parseLeadingInt(stringValue)
+                    } else if keyText.contains("year") || keyText.contains("date") {
+                        aYear = aYear ?? parseLeadingInt(stringValue)
+                    }
                 }
 
                 if let t = try? await asset.load(.tracks).first {
@@ -107,13 +169,19 @@ class ImportService: ObservableObject {
                     id: path.pathHash, path: path,
                     title: aTitle ?? url.deletingPathExtension().lastPathComponent,
                     artist: aArtist, album: aAlbum,
+                    albumArtist: aAlbumArtist, trackNo: aTrackNo, discNo: aDiscNo,
+                    year: aYear, genre: aGenre,
                     duration: dur ?? 0, format: ext,
                     sampleRate: aSampleRate, bitDepth: aBitDepth,
-                    channels: aChannels, bitrate: 0,
+                    channels: aChannels, bitrate: estimateBitrate(fileSize: fileSize, duration: dur ?? 0),
                     fileSize: fileSize, dateAdded: Date(), playCount: 0
                 )
-                await MainActor.run { self.database.insert(track: track) }
-                self.extractArtwork(path: path, id: track.id)
+                await MainActor.run { self.database?.insert(track: track) }
+                if let artworkData {
+                    self.cacheArtwork(artworkData, id: track.id)
+                } else {
+                    self.extractArtwork(path: path, id: track.id)
+                }
             }
             return
         }
@@ -121,15 +189,20 @@ class ImportService: ObservableObject {
         let track = Track(
             id: path.pathHash,
             path: path,
-            title: meta.title ?? url.deletingPathExtension().lastPathComponent,
+            title: meta.resolvedTitle ?? url.deletingPathExtension().lastPathComponent,
             artist: meta.artist,
             album: meta.album,
+            albumArtist: meta.resolvedAlbumArtist,
+            trackNo: meta.resolvedTrackNo,
+            discNo: meta.resolvedDiscNo,
+            year: meta.year,
+            genre: meta.genre,
             duration: duration,
             format: ext,
             sampleRate: sampleRate,
             bitDepth: bitDepth,
             channels: channels,
-            bitrate: 0,
+            bitrate: estimateBitrate(fileSize: fileSize, duration: duration),
             fileSize: fileSize,
             dateAdded: Date(),
             playCount: 0,
@@ -140,9 +213,7 @@ class ImportService: ObservableObject {
             phaseCorrelation: mastering.phase_correlation
         )
 
-        DispatchQueue.main.async {
-            self.database.insert(track: track)
-        }
+        DispatchQueue.main.async { self.database?.insert(track: track) }
         extractArtwork(path: path, id: track.id)
     }
 
@@ -180,6 +251,24 @@ class ImportService: ObservableObject {
         var title: String?
         var artist: String?
         var album: String?
+        var albumArtist: String?
+        var album_artist: String?
+        var trackNo: Int?
+        var track_no: Int?
+        var discNo: Int?
+        var disc_no: Int?
+        var year: Int?
+        var genre: String?
+
+        var resolvedTitle: String? { clean(title) }
+        var resolvedAlbumArtist: String? { clean(albumArtist) ?? clean(album_artist) }
+        var resolvedTrackNo: Int? { trackNo ?? track_no }
+        var resolvedDiscNo: Int? { discNo ?? disc_no }
+
+        private func clean(_ value: String?) -> String? {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }
     }
 
     private func parseMetadata(json: String?) -> MetadataJSON {
@@ -191,16 +280,56 @@ class ImportService: ObservableObject {
     }
 
     private func extractArtwork(path: String, id: String) {
-        guard artworkCache[id] == nil else { return }
+        // Check cache under lock
+        let cached = artworkLock.withLock { artworkCache[id] }
+        guard cached == nil else { return }
         let asset = AVAsset(url: URL(fileURLWithPath: path))
         Task {
             let metas = try? await asset.load(.commonMetadata)
             for item in metas ?? [] {
                 if item.commonKey == .commonKeyArtwork, let data = try? await item.load(.value) as? Data {
-                    await MainActor.run { self.artworkCache[id] = data }
+                    self.cacheArtwork(data, id: id)
                     break
                 }
             }
         }
+    }
+
+    private func cacheArtwork(_ data: Data, id: String) {
+        artworkLock.withLock { artworkCache[id] = data }
+        Task { @MainActor in self.objectWillChange.send() }
+    }
+
+    private func metadataKeyText(_ item: AVMetadataItem) -> String {
+        [
+            item.commonKey?.rawValue,
+            item.identifier?.rawValue,
+            item.keySpace?.rawValue,
+            item.key.map { String(describing: $0) }
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+        .lowercased()
+    }
+
+    private func metadataString(from item: AVMetadataItem) async -> String? {
+        guard let value = try? await item.load(.value) else { return nil }
+        if let string = value as? String { return string }
+        if let number = value as? NSNumber { return number.stringValue }
+        if let data = value as? Data { return String(data: data, encoding: .utf8) }
+        return nil
+    }
+
+    private func parseLeadingInt(_ value: String?) -> Int? {
+        guard let value else { return nil }
+        let digits = value.prefix { $0.isNumber }
+        if !digits.isEmpty { return Int(digits) }
+        let parts = value.split(whereSeparator: { !$0.isNumber })
+        return parts.compactMap { Int($0) }.first
+    }
+
+    private func estimateBitrate(fileSize: Int, duration: Double) -> Int {
+        guard duration > 0 else { return 0 }
+        return Int((Double(fileSize) * 8) / duration)
     }
 }
