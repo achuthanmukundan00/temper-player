@@ -103,7 +103,7 @@ struct MultibandWaveformView: View {
         let displayGainsDb = centers.enumerated().map { index, frequency in
             let weighting = index == 0 ? 0 : aWeightingDb(frequency: frequency) * 0.28
             let highTaper: CGFloat = index >= 3 ? CGFloat(index - 2) * 1.0 : 0
-            let colorBiasDb: [CGFloat] = [2.4, -1, -1.6, -2, 1, 3.6]
+            let colorBiasDb: [CGFloat] = [3.0, 1.0, 1.0, -4.0, -1.0, 4.0]
             return weighting - highTaper + colorBiasDb[index]
         }
         let floorDb: CGFloat = -56
@@ -131,11 +131,11 @@ struct MultibandWaveformView: View {
         let weightSum = max(0.001, rawWeights.reduce(0, +))
         let weights = rawWeights.map { $0 / weightSum }
 
+        // Spectral spread (kept for whiteBlend)
         var centroidLogHz: CGFloat = 0
         for index in weights.indices {
             centroidLogHz += log2(centers[index]) * weights[index]
         }
-
         var spread: CGFloat = 0
         for index in weights.indices {
             let distance = log2(centers[index]) - centroidLogHz
@@ -143,7 +143,18 @@ struct MultibandWaveformView: View {
         }
         spread = sqrt(spread)
 
-        var (r, g, b) = spectralColor(logHz: centroidLogHz)
+        // Color from the TWO strongest bands (not centroid).
+        // Centroid breaks bimodal distributions: bass+treble → middle → yellow/green.
+        // Two-band lerp gives bass+treble → red↔blue = purple/pink.
+        let sorted = weights.enumerated().sorted { $0.element > $1.element }
+        let primary   = sorted[0]
+        let secondary = sorted[1]
+        let blend = secondary.element / max(0.001, primary.element + secondary.element)
+        let (r1, g1, b1) = spectralColor(logHz: log2(centers[primary.offset]))
+        let (r2, g2, b2) = spectralColor(logHz: log2(centers[secondary.offset]))
+        var r = r1 + (r2 - r1) * blend
+        var g = g1 + (g2 - g1) * blend
+        var b = b1 + (b2 - b1) * blend
         let avg = (r + g + b) / 3
         let saturation: CGFloat = 1.18
         r = avg + (r - avg) * saturation
