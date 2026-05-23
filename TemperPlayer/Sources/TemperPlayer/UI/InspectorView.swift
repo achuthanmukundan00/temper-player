@@ -235,7 +235,7 @@ struct InspectorView: View {
     }
 
     private func commitEdit(field: EditTarget) {
-        guard let track = displayedTrack, let trackId = playerState.currentTrack?.id ?? library.tracks.first(where: { $0.id == track.id })?.id else {
+        guard let track = displayedTrack else {
             editTarget = nil
             return
         }
@@ -243,7 +243,7 @@ struct InspectorView: View {
         let title = field == .title ? (trimmed.isEmpty ? nil : trimmed) : track.title
         let artist = field == .artist ? (trimmed.isEmpty ? nil : trimmed) : track.artist
         let album = field == .album ? (trimmed.isEmpty ? nil : trimmed) : track.album
-        library.updateTrackMetadata(id: trackId, title: title, artist: artist, album: album)
+        library.updateTrackMetadata(id: track.id, title: title, artist: artist, album: album)
         editTarget = nil
     }
 
@@ -360,8 +360,9 @@ struct InspectorView: View {
 
     private var displayedTrack: Track? {
         if playerState.selectedTrackIds.count > 1 { return nil }
-        if playerState.isPlaying { return playerState.currentTrack }
-        if let id = hoveredTrackId { return library.tracks.first { $0.id == id } }
+        if playerState.isPlaying, let ct = playerState.currentTrack { return ct }
+        if let id = hoveredTrackId, let t = library.tracks.first(where: { $0.id == id }) { return t }
+        if let id = playerState.selectedTrackId, let t = library.tracks.first(where: { $0.id == id }) { return t }
         return playerState.currentTrack
     }
 }

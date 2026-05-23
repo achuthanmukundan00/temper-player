@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import CTemperPlayer
 import AVFoundation
+import CryptoKit
 import os
 
 class ImportService: ObservableObject {
@@ -16,7 +17,17 @@ class ImportService: ObservableObject {
 
     // Thread-safe artwork cache using os_unfair_lock
     private var artworkCache: [String: Data] = [:]
+    private var artworkIndex: [String: String] = [:] // trackId → contentHash
     private let artworkLock = OSAllocatedUnfairLock()
+
+    private var artworkDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".temperplayer/artwork")
+    }
+
+    private var artworkIndexURL: URL {
+        artworkDir.appendingPathComponent("index.json")
+    }
 
     func artwork(for trackId: String) -> Data? {
         artworkLock.withLock { artworkCache[trackId] }
@@ -33,14 +44,15 @@ class ImportService: ObservableObject {
         _ = url.startAccessingSecurityScopedResource()
         defer { url.stopAccessingSecurityScopedResource() }
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+        let hash = dataHash(data)
         artworkLock.withLock {
             for id in trackIds {
                 artworkCache[id] = data
+                artworkIndex[id] = hash
             }
         }
-        for id in trackIds {
-            persistArtwork(data, id: id)
-        }
+        persistArtwork(data, hash: hash)
+        saveArtworkIndex()
         Task { @MainActor in self.objectWillChange.send() }
     }
 
@@ -48,29 +60,107 @@ class ImportService: ObservableObject {
         _ = url.startAccessingSecurityScopedResource()
         defer { url.stopAccessingSecurityScopedResource() }
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return }
-        artworkLock.withLock { artworkCache[trackId] = data }
-        persistArtwork(data, id: trackId)
+        let hash = dataHash(data)
+        artworkLock.withLock {
+            artworkCache[trackId] = data
+            artworkIndex[trackId] = hash
+        }
+        persistArtwork(data, hash: hash)
+        saveArtworkIndex()
         Task { @MainActor in self.objectWillChange.send() }
     }
 
-    private func persistArtwork(_ data: Data, id: String) {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".temperplayer/artwork")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let dest = dir.appendingPathComponent("\(id).jpg")
+    // MARK: - Content-addressed artwork storage
+
+    private func dataHash(_ data: Data) -> String {
+        SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Write artwork data keyed by content hash. Only one copy per unique image.
+    private func persistArtwork(_ data: Data, hash: String) {
+        try? FileManager.default.createDirectory(at: artworkDir, withIntermediateDirectories: true)
+        let dest = artworkDir.appendingPathComponent("\(hash).jpg")
+        guard !FileManager.default.fileExists(atPath: dest.path) else { return }
         try? data.write(to: dest)
     }
 
+    private func saveArtworkIndex() {
+        let index = artworkLock.withLock { artworkIndex }
+        guard let json = try? JSONEncoder().encode(index) else { return }
+        try? FileManager.default.createDirectory(at: artworkDir, withIntermediateDirectories: true)
+        try? json.write(to: artworkIndexURL)
+    }
+
     private func loadArtworkCache() {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".temperplayer/artwork")
+        // Load index: trackId → contentHash
+        if let data = try? Data(contentsOf: artworkIndexURL),
+           let index = try? JSONDecoder().decode([String: String].self, from: data) {
+            artworkLock.withLock { artworkIndex = index }
+        }
+
+        // Load artwork data from content-addressed files
+        for (trackId, hash) in artworkLock.withLock({ artworkIndex }) {
+            let fileURL = artworkDir.appendingPathComponent("\(hash).jpg")
+            if let data = try? Data(contentsOf: fileURL) {
+                artworkLock.withLock { artworkCache[trackId] = data }
+            }
+        }
+
+        // Migrate legacy artwork files (named by track ID) to content-addressed
+        migrateLegacyArtwork()
+    }
+
+    /// Migrate old `{trackId}.jpg` files to content-addressed `{hash}.jpg`
+    private func migrateLegacyArtwork() {
+        // If we already have a populated index, nothing to migrate
+        let existingIndex = artworkLock.withLock { artworkIndex }
+        if !existingIndex.isEmpty { return }
+
         guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: nil
+            at: artworkDir, includingPropertiesForKeys: nil
         ) else { return }
+
+        var newMappings: [(trackId: String, hash: String, data: Data)] = []
+        var filesToDelete: [URL] = []
+
         for file in files where file.pathExtension == "jpg" {
-            let id = file.deletingPathExtension().lastPathComponent
-            if let data = try? Data(contentsOf: file) {
-                artworkLock.withLock { artworkCache[id] = data }
+            let name = file.deletingPathExtension().lastPathComponent
+            if name == "index" { continue }
+
+            guard let data = try? Data(contentsOf: file) else { continue }
+            let hash = dataHash(data)
+
+            // Already content-addressed — nothing to do
+            if name == hash { continue }
+
+            // Write content-addressed copy
+            let hashFile = artworkDir.appendingPathComponent("\(hash).jpg")
+            if !FileManager.default.fileExists(atPath: hashFile.path) {
+                do {
+                    try data.write(to: hashFile)
+                } catch {
+                    continue // skip this file if we can't write the new one
+                }
+            }
+
+            newMappings.append((name, hash, data))
+            filesToDelete.append(file)
+        }
+
+        // Save index BEFORE deleting legacy files (crash-safe)
+        if !newMappings.isEmpty {
+            let mappings = newMappings // capture for sendable closure
+            artworkLock.withLock {
+                for m in mappings {
+                    artworkCache[m.trackId] = m.data
+                    artworkIndex[m.trackId] = m.hash
+                }
+            }
+            saveArtworkIndex()
+
+            // Now safe to delete legacy files
+            for file in filesToDelete {
+                try? FileManager.default.removeItem(at: file)
             }
         }
     }
@@ -296,7 +386,13 @@ class ImportService: ObservableObject {
     }
 
     private func cacheArtwork(_ data: Data, id: String) {
-        artworkLock.withLock { artworkCache[id] = data }
+        let hash = dataHash(data)
+        artworkLock.withLock {
+            artworkCache[id] = data
+            artworkIndex[id] = hash
+        }
+        persistArtwork(data, hash: hash)
+        saveArtworkIndex()
         Task { @MainActor in self.objectWillChange.send() }
     }
 
