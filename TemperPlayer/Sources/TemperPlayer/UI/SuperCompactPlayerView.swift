@@ -1,0 +1,103 @@
+import SwiftUI
+
+struct SuperCompactPlayerView: View {
+    @EnvironmentObject var playerState: PlayerState
+    @EnvironmentObject var audioManager: AudioManager
+    @EnvironmentObject var playback: PlaybackController
+    @EnvironmentObject var library: Database
+    @Environment(\.uiScale) var uiScale
+    @ObservedObject private var importService = ImportService.shared
+
+    var body: some View {
+        if let track = playerState.currentTrack {
+            VStack(spacing: 0) {
+                HStack(spacing: 8 * uiScale) {
+                    artworkView(for: track)
+                        .frame(width: 28 * uiScale, height: 28 * uiScale)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(track.title ?? URL(fileURLWithPath: track.path).deletingPathExtension().lastPathComponent)
+                            .font(.system(size: 10 * uiScale, design: .monospaced))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                        if let artist = track.artist {
+                            Text(artist)
+                                .font(.system(size: 8 * uiScale, design: .monospaced))
+                                .foregroundColor(Color(white: 0.45))
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 10 * uiScale) {
+                        Text("\u{23EE}")
+                            .font(.system(size: 9 * uiScale, design: .monospaced))
+                            .foregroundColor(Color(white: 0.45))
+                            .frame(width: 18 * uiScale, height: 18 * uiScale)
+                            .onTapGesture { playback.previous() }
+
+                        ZStack {
+                            Circle()
+                                .stroke(Color(white: 0.3), lineWidth: 1)
+                                .frame(width: 20 * uiScale, height: 20 * uiScale)
+                            Text(playerState.isPlaying ? "\u{25A0}" : "\u{25B6}")
+                                .font(.system(size: 8 * uiScale, design: .monospaced))
+                                .foregroundColor(.white)
+                        }
+                        .onTapGesture { playback.togglePlayPause() }
+
+                        Text("\u{23ED}")
+                            .font(.system(size: 9 * uiScale, design: .monospaced))
+                            .foregroundColor(Color(white: 0.45))
+                            .frame(width: 18 * uiScale, height: 18 * uiScale)
+                            .onTapGesture { playback.next() }
+                    }
+                }
+                .padding(.horizontal, 10 * uiScale)
+                .padding(.vertical, 7 * uiScale)
+
+                // Mini progress bar
+                GeometryReader { geo in
+                    let progress = playerState.duration > 0 ? CGFloat(playerState.currentTime / playerState.duration) : 0
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(Color(white: 0.1)).frame(height: 1.5)
+                        Rectangle()
+                            .fill(Color(white: 0.6))
+                            .frame(width: max(2, geo.size.width * progress), height: 1.5)
+                    }
+                }
+                .frame(height: 1.5)
+            }
+            .background(Color.black)
+        } else {
+            HStack {
+                Text("\u{25B6} TemperPlayer")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(Color(white: 0.25))
+                Spacer()
+                Text("resize wider to browse")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundColor(Color(white: 0.15))
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40 * uiScale)
+            .background(Color.black)
+        }
+    }
+
+    @ViewBuilder
+    private func artworkView(for track: Track) -> some View {
+        if let data = importService.artwork(for: track.id), let nsImage = NSImage(data: data) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .clipped()
+                .overlay(Rectangle().stroke(Color(white: 0.15), lineWidth: 0.5))
+        } else {
+            Rectangle()
+                .fill(Color(white: 0.1))
+                .overlay(Rectangle().stroke(Color(white: 0.15), lineWidth: 0.5))
+        }
+    }
+}
