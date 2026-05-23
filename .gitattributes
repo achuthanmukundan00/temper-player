@@ -2,7 +2,6 @@
 *.zig linguist-language=Zig
 
 # Mark vendored files so they don't pollute language stats
-.superpowers/** linguist-vendored
 zig-core/libs/** linguist-vendored
 TemperPlayer/Sources/CTemperPlayer/** linguist-vendored
 zig-core/src/dr_flac_accessors.c linguist-vendored
