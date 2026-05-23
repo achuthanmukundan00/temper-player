@@ -26,15 +26,16 @@ struct MultibandWaveformView: View {
                     zero.addLine(to: CGPoint(x: size.width, y: centerY))
                     context.stroke(zero, with: .color(Color(white: 0.08)), lineWidth: 0.5)
 
-                    guard analyzer.waveformBands.count >= 5 else { return }
+                    guard analyzer.waveformBands.count >= 6 else { return }
                     let sub = analyzer.waveformBands[0]
-                    let lowMid = analyzer.waveformBands[1]
-                    let mid = analyzer.waveformBands[2]
-                    let upperMid = analyzer.waveformBands[3]
-                    let high = analyzer.waveformBands[4]
+                    let bass = analyzer.waveformBands[1]
+                    let lowMid = analyzer.waveformBands[2]
+                    let mid = analyzer.waveformBands[3]
+                    let upperMid = analyzer.waveformBands[4]
+                    let high = analyzer.waveformBands[5]
                     let positive = analyzer.waveformPositive
                     let negative = analyzer.waveformNegative
-                    let count = min(sub.count, lowMid.count, mid.count, upperMid.count, high.count, positive.count, negative.count)
+                    let count = min(sub.count, bass.count, lowMid.count, mid.count, upperMid.count, high.count, positive.count, negative.count)
                     guard count > 1 else { return }
 
                     let visibleCount = max(count, analyzer.waveformVisiblePointCount)
@@ -59,6 +60,7 @@ struct MultibandWaveformView: View {
                     for index in 0..<(count - 1) {
                         let next = index + 1
                         let s = (clampedBand(sub, index) + clampedBand(sub, next)) * 0.5
+                        let b = (clampedBand(bass, index) + clampedBand(bass, next)) * 0.5
                         let lm = (clampedBand(lowMid, index) + clampedBand(lowMid, next)) * 0.5
                         let m = (clampedBand(mid, index) + clampedBand(mid, next)) * 0.5
                         let um = (clampedBand(upperMid, index) + clampedBand(upperMid, next)) * 0.5
@@ -71,36 +73,19 @@ struct MultibandWaveformView: View {
                         let pos1 = max(0, min(1, CGFloat(positive[next])))
                         let neg0 = max(-1, min(0, CGFloat(negative[index])))
                         let neg1 = max(-1, min(0, CGFloat(negative[next])))
-                        let minHalfHeight = max(0.45, 0.35 * uiScale)
-                        let top0 = min(centerY - pos0 * usableHeight, centerY - minHalfHeight)
-                        let top1 = min(centerY - pos1 * usableHeight, centerY - minHalfHeight)
-                        let bottom0 = max(centerY - neg0 * usableHeight, centerY + minHalfHeight)
-                        let bottom1 = max(centerY - neg1 * usableHeight, centerY + minHalfHeight)
 
-                        let transient = transientStrength(red: s, orange: lm, green: m, cyan: um, blue: h)
-                        if transient > 0.03 {
-                            let lift = 1.04 + transient * 0.34
-                            let transientTop0 = centerY - min(1, pos0 * lift + transient * 0.02) * usableHeight
-                            let transientTop1 = centerY - min(1, pos1 * lift + transient * 0.02) * usableHeight
-                            let transientBottom0 = centerY - max(-1, neg0 * lift - transient * 0.02) * usableHeight
-                            let transientBottom1 = centerY - max(-1, neg1 * lift - transient * 0.02) * usableHeight
-                            let transientColor = waveformColor(red: s, orange: lm, green: m, cyan: um, blue: h, transient: transient)
-                            context.fill(
-                                envelopePath(
-                                    x0: x0,
-                                    x1: x1,
-                                    top0: transientTop0,
-                                    top1: transientTop1,
-                                    bottom0: transientBottom0,
-                                    bottom1: transientBottom1
-                                ),
-                                with: .color(transientColor.opacity(0.32 + Double(transient) * 0.26))
-                            )
-                        }
+                        let transient = transientStrength(red: s, orange: b, yellow: lm, green: m, cyan: um, blue: h)
 
-                        let color = waveformColor(red: s, orange: lm, green: m, cyan: um, blue: h, transient: transient)
+                        let color = waveformColor(red: s, orange: b, yellow: lm, green: m, cyan: um, blue: h, transient: transient)
                         context.fill(
-                            envelopePath(x0: x0, x1: x1, top0: top0, top1: top1, bottom0: bottom0, bottom1: bottom1),
+                            envelopePath(
+                                x0: x0,
+                                x1: x1,
+                                top0: centerY - pos0 * usableHeight,
+                                top1: centerY - pos1 * usableHeight,
+                                bottom0: centerY - neg0 * usableHeight,
+                                bottom1: centerY - neg1 * usableHeight
+                            ),
                             with: .color(color.opacity(0.94))
                         )
                     }
@@ -112,43 +97,142 @@ struct MultibandWaveformView: View {
         }
     }
 
-    private func waveformColor(red: CGFloat, orange: CGFloat, green: CGFloat, cyan: CGFloat, blue: CGFloat, transient: CGFloat) -> Color {
-        let total = max(0.001, red + orange + green + cyan + blue)
-        let rWeight = red / total
-        let oWeight = orange / total
-        let gWeight = green / total
-        let cWeight = cyan / total
-        let bWeight = blue / total
+    private func waveformColor(red: CGFloat, orange: CGFloat, yellow: CGFloat, green: CGFloat, cyan: CGFloat, blue: CGFloat, transient: CGFloat) -> Color {
+        let centers: [CGFloat] = [55, 160, 350, 850, 2600, 10000]
+        let rawAmps = [red, orange, yellow, green, cyan, blue]
+        let displayGainsDb = centers.enumerated().map { index, frequency in
+            let weighting = index == 0 ? 0 : aWeightingDb(frequency: frequency) * 0.28
+            let highTaper: CGFloat = index >= 3 ? CGFloat(index - 2) * 1.0 : 0
+            let colorBiasDb: [CGFloat] = [2.4, -1, -1.6, -2, 1, 3.6]
+            return weighting - highTaper + colorBiasDb[index]
+        }
+        let floorDb: CGFloat = -56
 
-        var r = rWeight * 1.00 + oWeight * 0.92 + gWeight * 0.46 + cWeight * 0.18 + bWeight * 0.48
-        var g = rWeight * 0.05 + oWeight * 0.46 + gWeight * 1.00 + cWeight * 0.54 + bWeight * 0.10
-        var b = rWeight * 0.08 + oWeight * 0.04 + gWeight * 0.06 + cWeight * 1.00 + bWeight * 1.00
+        var rawDbs: [CGFloat] = []
+        var compensatedDbs: [CGFloat] = []
+        for i in rawAmps.indices {
+            let amp = max(1e-6, rawAmps[i])
+            let rawDb = 20 * log10(amp)
+            let compensationDb = displayGainsDb[i]
+            rawDbs.append(rawDb)
+            compensatedDbs.append(rawDb + compensationDb)
+        }
 
-        let lowPresence = min(1, rWeight + oWeight * 0.7)
-        let highPresence = min(1, cWeight * 0.75 + bWeight)
-        let lowHighBlend = min(lowPresence, highPresence) * min(1, (cyan + blue) * 1.35)
-        r += lowHighBlend * 0.10
-        g -= lowHighBlend * 0.16
-        b += lowHighBlend * 0.48
+        let activity = max(red, max(orange, max(yellow, max(green, max(cyan, blue)))))
+        let activityDb = 20 * log10(max(1e-6, activity))
+        let brightness = pow(max(0, min(1, (activityDb - floorDb) / (-floorDb))), 0.55)
 
-        let average = (r + g + b) / 3
-        let saturation: CGFloat = 1.45
-        r = average + (r - average) * saturation
-        g = average + (g - average) * saturation
-        b = average + (b - average) * saturation
+        let maxDb = compensatedDbs.max() ?? -60
+        var rawWeights = compensatedDbs.map { pow(CGFloat(10), max(-42, $0 - maxDb) / 12) }
 
-        let lift = min(0.12, max(red, max(orange, max(green, max(cyan, blue)))) * 0.08 + transient * 0.10)
+        let yellowMargin = compensatedDbs[2] - max(compensatedDbs[3], max(compensatedDbs[4], compensatedDbs[5]))
+        rawWeights[2] *= 0.52 + 0.48 * smoothstep(edge0: -4, edge1: 6, value: yellowMargin)
+
+        let weightSum = max(0.001, rawWeights.reduce(0, +))
+        let weights = rawWeights.map { $0 / weightSum }
+
+        var centroidLogHz: CGFloat = 0
+        for index in weights.indices {
+            centroidLogHz += log2(centers[index]) * weights[index]
+        }
+
+        var spread: CGFloat = 0
+        for index in weights.indices {
+            let distance = log2(centers[index]) - centroidLogHz
+            spread += distance * distance * weights[index]
+        }
+        spread = sqrt(spread)
+
+        var (r, g, b) = spectralColor(logHz: centroidLogHz)
+        let avg = (r + g + b) / 3
+        let saturation: CGFloat = 1.18
+        r = avg + (r - avg) * saturation
+        g = avg + (g - avg) * saturation
+        b = avg + (b - avg) * saturation
+
+        let lowWeight = weights[0] + weights[1]
+        let midWeight = weights[2] + weights[3]
+        let highWeight = weights[4] + weights[5]
+        let balancedSpan = min(
+            smoothstep(edge0: 0.18, edge1: 0.42, value: lowWeight),
+            min(
+                smoothstep(edge0: 0.14, edge1: 0.34, value: midWeight),
+                smoothstep(edge0: 0.18, edge1: 0.42, value: highWeight)
+            )
+        )
+        let wideSpan = smoothstep(edge0: 1.05, edge1: 2.20, value: spread)
+        let whiteBlend = min(0.58, balancedSpan * wideSpan * smoothstep(edge0: 0.68, edge1: 0.98, value: transient))
+
+        r = r * (1 - whiteBlend) + whiteBlend
+        g = g * (1 - whiteBlend) + whiteBlend
+        b = b * (1 - whiteBlend) + whiteBlend
+
+        let dimFactor = min(1, 0.10 + brightness * 0.92 + transient * 0.16 + whiteBlend * 0.40)
+        let lift = transient * 0.03 + whiteBlend * 0.18
 
         return Color(
-            red: min(1, max(0, r + lift)),
-            green: min(1, max(0, g + lift)),
-            blue: min(1, max(0, b + lift))
+            red:   min(1, max(0, r * dimFactor + lift)),
+            green: min(1, max(0, g * dimFactor + lift)),
+            blue:  min(1, max(0, b * dimFactor + lift))
         )
     }
 
-    private func transientStrength(red: CGFloat, orange: CGFloat, green: CGFloat, cyan: CGFloat, blue: CGFloat) -> CGFloat {
-        let strongest = max(red, max(orange, max(green, max(cyan, blue))))
-        return max(0, min(1, (strongest - 0.55) * 1.7))
+    private func transientStrength(red: CGFloat, orange: CGFloat, yellow: CGFloat, green: CGFloat, cyan: CGFloat, blue: CGFloat) -> CGFloat {
+        let strongest = max(red, max(orange, max(yellow, max(green, max(cyan, blue)))))
+        let total = red + orange + yellow + green + cyan + blue
+        let peakHit = smoothstep(edge0: 0.38, edge1: 0.82, value: strongest)
+        let broadbandHit = smoothstep(edge0: 0.72, edge1: 1.90, value: total)
+        return max(peakHit, broadbandHit * 0.92)
+    }
+
+    private func smoothstep(edge0: CGFloat, edge1: CGFloat, value: CGFloat) -> CGFloat {
+        let x = max(0, min(1, (value - edge0) / max(0.0001, edge1 - edge0)))
+        return x * x * (3 - 2 * x)
+    }
+
+    private func aWeightingDb(frequency: CGFloat) -> CGFloat {
+        let f2 = frequency * frequency
+        let f4 = f2 * f2
+        let c20 = CGFloat(20.6 * 20.6)
+        let c108 = CGFloat(107.7 * 107.7)
+        let c738 = CGFloat(737.9 * 737.9)
+        let c12200 = CGFloat(12_200 * 12_200)
+        let numerator = c12200 * f4
+        let denominator = (f2 + c20) * sqrt((f2 + c108) * (f2 + c738)) * (f2 + c12200)
+        return 2.0 + 20 * log10(max(1e-12, numerator / denominator))
+    }
+
+    private func spectralColor(logHz: CGFloat) -> (CGFloat, CGFloat, CGFloat) {
+        let stops: [(hz: CGFloat, r: CGFloat, g: CGFloat, b: CGFloat)] = [
+            (55, 1.00, 0.04, 0.02),
+            (160, 1.00, 0.36, 0.02),
+            (350, 1.00, 0.88, 0.04),
+            (850, 0.20, 0.96, 0.22),
+            (2_600, 0.02, 0.92, 1.00),
+            (10_000, 0.16, 0.40, 1.00)
+        ]
+
+        if logHz <= log2(stops[0].hz) {
+            let stop = stops[0]
+            return (stop.r, stop.g, stop.b)
+        }
+
+        for index in 0..<(stops.count - 1) {
+            let lower = stops[index]
+            let upper = stops[index + 1]
+            let lowerLog = log2(lower.hz)
+            let upperLog = log2(upper.hz)
+            guard logHz <= upperLog else { continue }
+            let t = max(0, min(1, (logHz - lowerLog) / (upperLog - lowerLog)))
+            return (
+                lower.r + (upper.r - lower.r) * t,
+                lower.g + (upper.g - lower.g) * t,
+                lower.b + (upper.b - lower.b) * t
+            )
+        }
+
+        let stop = stops[stops.count - 1]
+        return (stop.r, stop.g, stop.b)
     }
 
 }

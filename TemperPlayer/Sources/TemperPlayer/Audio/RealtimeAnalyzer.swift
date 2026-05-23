@@ -201,7 +201,7 @@ final class RealtimeAnalyzer: ObservableObject {
     private var spectrumFastBinEnds: [Int]
     private var spectrumPeakWeights: [Float]
     private var spectrumFastWeights: [Float]
-    private var spectrumTilts: [Float]
+    private var spectrumTiltsDb: [Float]
     private var spectrumLongEnergyCache: [Float]
     private var spectrumMappingSampleRate: Float = 0
     private var bandLevelScratch: [Float]
@@ -213,20 +213,27 @@ final class RealtimeAnalyzer: ObservableObject {
     private var fftHistoryRing: [Float]
     private var fftHistoryWriteIndex = 0
     private var fftHistoryCount = 0
+    private var lowpass80State: Float = 0
     private var lowpass250State: Float = 0
-    private var lowpass600State: Float = 0
+    private var lowpass400State: Float = 0
     private var lowpass1300State: Float = 0
     private var lowpass5000State: Float = 0
+    private var lowpass80State2: Float = 0
+    private var lowpass250State2: Float = 0
+    private var lowpass400State2: Float = 0
+    private var lowpass1300State2: Float = 0
+    private var lowpass5000State2: Float = 0
+    private var lowpass80Alpha: Float = 0
     private var lowpass250Alpha: Float = 0
-    private var lowpass600Alpha: Float = 0
+    private var lowpass400Alpha: Float = 0
     private var lowpass1300Alpha: Float = 0
     private var lowpass5000Alpha: Float = 0
     private var framesPerWaveformPoint = 147
     private var waveformScrollPhase: Float = 0
-    private var waveformHistoryBands: [[Float]] = [[], [], [], [], []]
+    private var waveformHistoryBands: [[Float]] = [[], [], [], [], [], []]
     private var waveformPositiveHistory: [Float] = []
     private var waveformNegativeHistory: [Float] = []
-    private var waveformBucketPeaks: [Float] = [0, 0, 0, 0, 0]
+    private var waveformBucketPeaks: [Float] = [0, 0, 0, 0, 0, 0]
     private var waveformBucketPositive: Float = 0
     private var waveformBucketNegative: Float = 0
     private var waveformBucketFrames = 0
@@ -242,7 +249,7 @@ final class RealtimeAnalyzer: ObservableObject {
     // Published state
     private(set) var spectrogramLines: [[Float]] = []
     private(set) var spectrumBars: [Float] = []
-    private(set) var waveformBands: [[Float]] = [[], [], [], [], []]
+    private(set) var waveformBands: [[Float]] = [[], [], [], [], [], []]
     private(set) var waveformPositive: [Float] = []
     private(set) var waveformNegative: [Float] = []
     var waveformVisiblePointCount: Int { waveformPointCount }
@@ -301,7 +308,7 @@ final class RealtimeAnalyzer: ObservableObject {
         self.spectrumFastBinEnds = [Int](repeating: 2, count: spectrumBarCount)
         self.spectrumPeakWeights = [Float](repeating: 0, count: spectrumBarCount)
         self.spectrumFastWeights = [Float](repeating: 0, count: spectrumBarCount)
-        self.spectrumTilts = [Float](repeating: 0, count: spectrumBarCount)
+        self.spectrumTiltsDb = [Float](repeating: 0, count: spectrumBarCount)
         self.spectrumLongEnergyCache = [Float](repeating: 1e-12, count: spectrumBarCount)
         self.bandLevelScratch = [Float](repeating: 0, count: 3)
         self.cachedBandLevels = [Float](repeating: 0, count: 3)
@@ -355,18 +362,24 @@ final class RealtimeAnalyzer: ObservableObject {
         goniometerSamples.removeAll(keepingCapacity: true)
         fftHistoryWriteIndex = 0
         fftHistoryCount = 0
-        waveformHistoryBands = [[], [], [], [], []]
+        waveformHistoryBands = [[], [], [], [], [], []]
         waveformPositiveHistory = []
         waveformNegativeHistory = []
-        waveformBucketPeaks = [0, 0, 0, 0, 0]
+        waveformBucketPeaks = [0, 0, 0, 0, 0, 0]
         waveformBucketPositive = 0
         waveformBucketNegative = 0
         waveformBucketFrames = 0
         waveformScrollPhase = 0
+        lowpass80State = 0
         lowpass250State = 0
-        lowpass600State = 0
+        lowpass400State = 0
         lowpass1300State = 0
         lowpass5000State = 0
+        lowpass80State2 = 0
+        lowpass250State2 = 0
+        lowpass400State2 = 0
+        lowpass1300State2 = 0
+        lowpass5000State2 = 0
         spectrumDisplayBars = [Float](repeating: 0, count: spectrumBarCount)
         spectrumLongEnergyCache = [Float](repeating: 1e-12, count: spectrumBarCount)
         hasLongFFTCache = false
@@ -384,7 +397,7 @@ final class RealtimeAnalyzer: ObservableObject {
             self.objectWillChange.send()
             self.spectrogramLines = []
             self.spectrumBars = []
-            self.waveformBands = [[], [], [], [], []]
+            self.waveformBands = [[], [], [], [], [], []]
             self.waveformPositive = []
             self.waveformNegative = []
             self.waveformPhase = 0
@@ -842,11 +855,12 @@ final class RealtimeAnalyzer: ObservableObject {
 
             let fastWeight = lowLatencySpectrumEnabled ? spectrumFastWeights[index] : 0
             let energy = max(longEnergy * (1 - fastWeight) + fastEnergy * fastWeight, 1e-12)
-            let db = 10 * log10(energy)
+            let rawDb = 10 * log10(energy)
+            let tiltedDb = rawDb + spectrumTiltsDb[index]
 
             let floorDb: Float = -88
             let topDb: Float = -10
-            let linear = max(0, min(1, (db - floorDb) / (topDb - floorDb) + spectrumTilts[index]))
+            let linear = max(0, min(1, (tiltedDb - floorDb) / (topDb - floorDb)))
             let normalized = pow(linear, 1.35)
             spectrumRawBars[index] = normalized
         }
@@ -858,7 +872,16 @@ final class RealtimeAnalyzer: ObservableObject {
         for index in 0..<spectrumBarCount {
             let incoming = spectrumRawBars[index]
             let previous = spectrumDisplayBars[index]
-            let decayed = previous * 0.58
+            // Frequency-dependent release: bass stays stable, treble decays fast.
+            // Constants derived from analysis frame rate (~187 Hz at 48k/256):
+            //   0.58 → ~68ms to -30 dB   (bass)
+            //   0.40 → ~32ms to -30 dB   (mid)
+            //   0.16 → ~20ms to -30 dB   (treble)
+            let bassRelease: Float  = 0.58
+            let trebleRelease: Float = 0.16
+            let t = Float(index) / Float(max(1, spectrumBarCount - 1))
+            let bandRelease = bassRelease + (trebleRelease - bassRelease) * t
+            let decayed = previous * bandRelease
             spectrumDisplayBars[index] = incoming >= previous ? incoming : max(incoming, decayed)
         }
 
@@ -905,23 +928,34 @@ final class RealtimeAnalyzer: ObservableObject {
 
         for index in 0..<count {
             let sample = samples[index]
-            let signedSample = max(-1, min(1, sample * 1.65))
-            lowpass250State += lowpass250Alpha * (sample - lowpass250State)
-            lowpass600State += lowpass600Alpha * (sample - lowpass600State)
-            lowpass1300State += lowpass1300Alpha * (sample - lowpass1300State)
-            lowpass5000State += lowpass5000Alpha * (sample - lowpass5000State)
+            let signedSample = max(-1, min(1, sample))
 
-            let redSample = lowpass250State                              // <250 Hz
-            let orangeSample = lowpass600State - lowpass250State          // 250-600 Hz
-            let greenSample = lowpass1300State - lowpass600State          // 600 Hz-1.3 kHz
-            let cyanSample = lowpass5000State - lowpass1300State          // 1.3-5 kHz
-            let blueSample = sample - lowpass5000State                    // 5 kHz+
+            // Two-pole (12 dB/oct) lowpass filters. Low color bands are narrow
+            // so red only represents true sub energy instead of broad bass bleed.
+            lowpass80State  += lowpass80Alpha  * (sample - lowpass80State)
+            lowpass80State2 += lowpass80Alpha  * (lowpass80State - lowpass80State2)
+            lowpass250State  += lowpass250Alpha  * (sample - lowpass250State)
+            lowpass250State2 += lowpass250Alpha  * (lowpass250State - lowpass250State2)
+            lowpass400State  += lowpass400Alpha  * (sample - lowpass400State)
+            lowpass400State2 += lowpass400Alpha  * (lowpass400State - lowpass400State2)
+            lowpass1300State += lowpass1300Alpha * (sample - lowpass1300State)
+            lowpass1300State2 += lowpass1300Alpha * (lowpass1300State - lowpass1300State2)
+            lowpass5000State += lowpass5000Alpha * (sample - lowpass5000State)
+            lowpass5000State2 += lowpass5000Alpha * (lowpass5000State - lowpass5000State2)
+
+            let redSample    = lowpass80State2
+            let orangeSample = lowpass250State2 - lowpass80State2
+            let yellowSample = lowpass400State2 - lowpass250State2
+            let greenSample  = lowpass1300State2 - lowpass400State2
+            let cyanSample   = lowpass5000State2 - lowpass1300State2
+            let blueSample   = sample - lowpass5000State2
 
             waveformBucketPeaks[0] = max(waveformBucketPeaks[0], waveformAmplitude(redSample, gain: 1))
             waveformBucketPeaks[1] = max(waveformBucketPeaks[1], waveformAmplitude(orangeSample, gain: 1))
-            waveformBucketPeaks[2] = max(waveformBucketPeaks[2], waveformAmplitude(greenSample, gain: 1))
-            waveformBucketPeaks[3] = max(waveformBucketPeaks[3], waveformAmplitude(cyanSample, gain: 1))
-            waveformBucketPeaks[4] = max(waveformBucketPeaks[4], waveformAmplitude(blueSample, gain: 1))
+            waveformBucketPeaks[2] = max(waveformBucketPeaks[2], waveformAmplitude(yellowSample, gain: 1))
+            waveformBucketPeaks[3] = max(waveformBucketPeaks[3], waveformAmplitude(greenSample, gain: 1))
+            waveformBucketPeaks[4] = max(waveformBucketPeaks[4], waveformAmplitude(cyanSample, gain: 1))
+            waveformBucketPeaks[5] = max(waveformBucketPeaks[5], waveformAmplitude(blueSample, gain: 1))
             waveformBucketPositive = max(waveformBucketPositive, signedSample)
             waveformBucketNegative = min(waveformBucketNegative, signedSample)
             waveformBucketFrames += 1
@@ -951,10 +985,14 @@ final class RealtimeAnalyzer: ObservableObject {
 
     private func configureAnalysis(for rate: Float) {
         let safeRate = max(1, rate)
-        lowpass250Alpha = 1 - exp(-2 * .pi * 250 / safeRate)
-        lowpass600Alpha = 1 - exp(-2 * .pi * 600 / safeRate)
-        lowpass1300Alpha = 1 - exp(-2 * .pi * 1_300 / safeRate)
-        lowpass5000Alpha = 1 - exp(-2 * .pi * 5_000 / safeRate)
+        // Two-pole cascade shifts the -3 dB point down by ~0.644×.
+        // Compensate cutoff frequencies so the effective -3 dB stays at the target.
+        let compensate: Float = 1.0 / 0.644  // ≈ 1.553
+        lowpass80Alpha   = 1 - exp(-2 * .pi * (80   * compensate) / safeRate)
+        lowpass250Alpha  = 1 - exp(-2 * .pi * (250  * compensate) / safeRate)
+        lowpass400Alpha  = 1 - exp(-2 * .pi * (400  * compensate) / safeRate)
+        lowpass1300Alpha = 1 - exp(-2 * .pi * (1300 * compensate) / safeRate)
+        lowpass5000Alpha = 1 - exp(-2 * .pi * (5000 * compensate) / safeRate)
         framesPerWaveformPoint = max(32, Int(safeRate / 110))
         configureSpectrumMapping(for: safeRate)
     }
@@ -985,12 +1023,54 @@ final class RealtimeAnalyzer: ObservableObject {
             spectrumLongBinEnds[index] = longB1
             spectrumFastBinStarts[index] = fastB0
             spectrumFastBinEnds[index] = fastB1
-            spectrumPeakWeights[index] = 0.34 + 0.30 * pow(t, 1.15)
+            // Peak weighting: how much the peak bin contributes vs. the band average.
+            // Below 5 kHz: modest peak blend (34%→64%). Above 5 kHz: aggressive
+            // peak weighting (80%→90%) so sparse hi-hat energy isn't averaged away
+            // across wide log bands.
+            if centerHz > 5000 {
+                spectrumPeakWeights[index] = 0.80 + 0.10 * min(1, (centerHz - 5000) / 15000)
+            } else {
+                spectrumPeakWeights[index] = 0.34 + 0.30 * pow(t, 1.15)
+            }
             spectrumFastWeights[index] = smoothstep(edge0: 260, edge1: 900, value: centerHz)
-            spectrumTilts[index] = -0.14 * pow(1 - t, 1.25) + 0.05 * pow(t, 1.6)
+
+            // Display tilt in dB space. Keep bass honest without burying it:
+            // the old -30 dB+ sub cut made real low end look absent.
+            let octavesFromReference = log2(max(1, centerHz) / 1_000)
+            let tiltDbPerOctave: Float = octavesFromReference < 0 ? 3.2 : 2.6
+            let tiltDb = tiltDbPerOctave * octavesFromReference + spectrumColorBiasDb(for: centerHz)
+            spectrumTiltsDb[index] = max(-16, min(12, tiltDb))
         }
 
         spectrumMappingSampleRate = safeRate
+    }
+
+    private func spectrumColorBiasDb(for frequency: Float) -> Float {
+        let stops: [(hz: Float, db: Float)] = [
+            (55, 0),
+            (160, 0),
+            (350, 0),
+            (850, 0),
+            (2_600, 0),
+            (10_000, 0)
+        ]
+        let logHz = log2(max(1, frequency))
+
+        if logHz <= log2(stops[0].hz) {
+            return stops[0].db
+        }
+
+        for index in 0..<(stops.count - 1) {
+            let lower = stops[index]
+            let upper = stops[index + 1]
+            let lowerLog = log2(lower.hz)
+            let upperLog = log2(upper.hz)
+            guard logHz <= upperLog else { continue }
+            let t = max(0, min(1, (logHz - lowerLog) / (upperLog - lowerLog)))
+            return lower.db + (upper.db - lower.db) * t
+        }
+
+        return stops[stops.count - 1].db
     }
 
     private func smoothstep(edge0: Float, edge1: Float, value: Float) -> Float {
@@ -999,11 +1079,11 @@ final class RealtimeAnalyzer: ObservableObject {
     }
 
     private func appendWaveformPoint(_ point: [Float], positive: Float, negative: Float) {
-        if waveformHistoryBands.count != 5 {
-            waveformHistoryBands = [[], [], [], [], []]
+        if waveformHistoryBands.count != 6 {
+            waveformHistoryBands = [[], [], [], [], [], []]
         }
 
-        for band in 0..<5 {
+        for band in 0..<6 {
             waveformHistoryBands[band].append(point[band])
             if waveformHistoryBands[band].count > waveformPointCount {
                 waveformHistoryBands[band].removeFirst(waveformHistoryBands[band].count - waveformPointCount)

@@ -105,7 +105,7 @@ class PlayerState: ObservableObject {
     @Published var visibleTracks: [Track] = []
     @Published var selectedTrackId: String?
     @Published var selectedTrackIds: Set<String> = []
-    @Published var volume: Float = 0.75
+    @Published var volume: Float = 1.0
 
     var upcomingQueue: [Track] {
         guard let queueIndex else { return queue }
