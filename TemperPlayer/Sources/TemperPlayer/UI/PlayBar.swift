@@ -56,12 +56,9 @@ struct PlayBar: View {
             VStack(alignment: .trailing, spacing: 1) {
                 Text(String(format: "P:%.1f", analyzer.peak))
                     .font(.system(size: 7 * uiScale, design: .monospaced))
-                    .foregroundColor(analyzer.peak > 0.9 ? .red : Color(white: 0.3))
-                Text(String(format: "R:%.1f", analyzer.rms))
-                    .font(.system(size: 7 * uiScale, design: .monospaced))
-                    .foregroundColor(Color(white: 0.2))
+                    .foregroundColor(analyzer.peak > 0.9 ? .red : Color(white: 0.2))
             }
-            .frame(width: 44 * uiScale)
+            .frame(width: 32 * uiScale)
         }
         .padding(.horizontal, 16 * uiScale)
         .frame(height: 24 * uiScale)

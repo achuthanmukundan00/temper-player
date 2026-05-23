@@ -27,7 +27,7 @@ class AudioManager: ObservableObject {
     var onTrackFinished: (() -> Void)?
 
     init() {
-        analyzer = RealtimeAnalyzer(engine: engine, tapNode: playerNode)
+        analyzer = RealtimeAnalyzer(engine: engine)
         engine.attach(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
         try? engine.start()
@@ -179,6 +179,7 @@ class AudioManager: ObservableObject {
             stopTimeTimer()
             playerNode.pause()
             isPlaying = false
+            analyzer.isFrozen = true
         }
     }
 
@@ -191,6 +192,7 @@ class AudioManager: ObservableObject {
             }
             playerNode.play()
             isPlaying = true
+            analyzer.isFrozen = false
         }
     }
 

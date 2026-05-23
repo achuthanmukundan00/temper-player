@@ -32,68 +32,125 @@ struct MultibandWaveformView: View {
                     let mid = analyzer.waveformBands[2]
                     let upperMid = analyzer.waveformBands[3]
                     let high = analyzer.waveformBands[4]
-                    let count = min(sub.count, lowMid.count, mid.count, upperMid.count, high.count)
+                    let positive = analyzer.waveformPositive
+                    let negative = analyzer.waveformNegative
+                    let count = min(sub.count, lowMid.count, mid.count, upperMid.count, high.count, positive.count, negative.count)
                     guard count > 1 else { return }
 
-                    let xStep = size.width / CGFloat(count)
+                    let visibleCount = max(count, analyzer.waveformVisiblePointCount)
+                    let xStep = size.width / CGFloat(max(1, visibleCount))
                     let scrollOffset = CGFloat(analyzer.waveformPhase) * xStep
-                    let barWidth = max(1, xStep * 0.82)
+                    let startSlot = visibleCount - count
 
-                    for index in 0..<count {
-                        let s = max(0, min(1, CGFloat(sub[index])))
-                        let lm = max(0, min(1, CGFloat(lowMid[index])))
-                        let m = max(0, min(1, CGFloat(mid[index])))
-                        let um = max(0, min(1, CGFloat(upperMid[index])))
-                        let h = max(0, min(1, CGFloat(high[index])))
-                        let peak = min(1, pow(max(s * 0.98, max(lm * 0.95, max(m * 0.85, max(um * 0.88, h * 0.9)))), 0.82))
-                        let height = max(1, peak * usableHeight)
-                        let x = CGFloat(index) * xStep - scrollOffset
-                        guard x + barWidth >= 0, x <= size.width else { continue }
-                        let rect = CGRect(
-                            x: x,
-                            y: centerY - height,
-                            width: barWidth,
-                            height: height * 2
+                    func clampedBand(_ values: [Float], _ index: Int) -> CGFloat {
+                        max(0, min(1, CGFloat(values[index])))
+                    }
+
+                    func envelopePath(x0: CGFloat, x1: CGFloat, top0: CGFloat, top1: CGFloat, bottom0: CGFloat, bottom1: CGFloat) -> Path {
+                        var path = Path()
+                        path.move(to: CGPoint(x: x0, y: top0))
+                        path.addLine(to: CGPoint(x: x1, y: top1))
+                        path.addLine(to: CGPoint(x: x1, y: bottom1))
+                        path.addLine(to: CGPoint(x: x0, y: bottom0))
+                        path.closeSubpath()
+                        return path
+                    }
+
+                    for index in 0..<(count - 1) {
+                        let next = index + 1
+                        let s = (clampedBand(sub, index) + clampedBand(sub, next)) * 0.5
+                        let lm = (clampedBand(lowMid, index) + clampedBand(lowMid, next)) * 0.5
+                        let m = (clampedBand(mid, index) + clampedBand(mid, next)) * 0.5
+                        let um = (clampedBand(upperMid, index) + clampedBand(upperMid, next)) * 0.5
+                        let h = (clampedBand(high, index) + clampedBand(high, next)) * 0.5
+                        let x0 = CGFloat(startSlot + index) * xStep - scrollOffset
+                        let x1 = CGFloat(startSlot + next) * xStep - scrollOffset
+                        guard x1 >= 0, x0 <= size.width else { continue }
+
+                        let pos0 = max(0, min(1, CGFloat(positive[index])))
+                        let pos1 = max(0, min(1, CGFloat(positive[next])))
+                        let neg0 = max(-1, min(0, CGFloat(negative[index])))
+                        let neg1 = max(-1, min(0, CGFloat(negative[next])))
+                        let minHalfHeight = max(0.45, 0.35 * uiScale)
+                        let top0 = min(centerY - pos0 * usableHeight, centerY - minHalfHeight)
+                        let top1 = min(centerY - pos1 * usableHeight, centerY - minHalfHeight)
+                        let bottom0 = max(centerY - neg0 * usableHeight, centerY + minHalfHeight)
+                        let bottom1 = max(centerY - neg1 * usableHeight, centerY + minHalfHeight)
+
+                        let transient = transientStrength(red: s, orange: lm, green: m, cyan: um, blue: h)
+                        if transient > 0.03 {
+                            let lift = 1.04 + transient * 0.34
+                            let transientTop0 = centerY - min(1, pos0 * lift + transient * 0.02) * usableHeight
+                            let transientTop1 = centerY - min(1, pos1 * lift + transient * 0.02) * usableHeight
+                            let transientBottom0 = centerY - max(-1, neg0 * lift - transient * 0.02) * usableHeight
+                            let transientBottom1 = centerY - max(-1, neg1 * lift - transient * 0.02) * usableHeight
+                            let transientColor = waveformColor(red: s, orange: lm, green: m, cyan: um, blue: h, transient: transient)
+                            context.fill(
+                                envelopePath(
+                                    x0: x0,
+                                    x1: x1,
+                                    top0: transientTop0,
+                                    top1: transientTop1,
+                                    bottom0: transientBottom0,
+                                    bottom1: transientBottom1
+                                ),
+                                with: .color(transientColor.opacity(0.32 + Double(transient) * 0.26))
+                            )
+                        }
+
+                        let color = waveformColor(red: s, orange: lm, green: m, cyan: um, blue: h, transient: transient)
+                        context.fill(
+                            envelopePath(x0: x0, x1: x1, top0: top0, top1: top1, bottom0: bottom0, bottom1: bottom1),
+                            with: .color(color.opacity(0.94))
                         )
-
-                        let color = waveformColor(sub: s, lowMid: lm, mid: m, upperMid: um, high: h)
-                        context.fill(Path(rect), with: .color(color.opacity(0.9)))
                     }
                 }
             }
-            .frame(height: 46 * uiScale)
+            .frame(height: 52 * uiScale)
             .background(Color(white: 0.02))
-            .overlay(Rectangle().stroke(Color(white: 0.08)))
+            .overlay(Rectangle().stroke(Color(white: 0.06)))
         }
     }
 
-    private func waveformColor(sub: CGFloat, lowMid: CGFloat, mid: CGFloat, upperMid: CGFloat, high: CGFloat) -> Color {
-        let total = max(0.001, sub + lowMid + mid + upperMid + high)
-        let sRatio = sub / total         // 0–200 Hz
-        let lmRatio = lowMid / total     // 200–350 Hz
-        let mRatio = mid / total         // 350–900 Hz
-        let umRatio = upperMid / total   // 900–5000 Hz
-        let hRatio = high / total        // 5000+ Hz
+    private func waveformColor(red: CGFloat, orange: CGFloat, green: CGFloat, cyan: CGFloat, blue: CGFloat, transient: CGFloat) -> Color {
+        let total = max(0.001, red + orange + green + cyan + blue)
+        let rWeight = red / total
+        let oWeight = orange / total
+        let gWeight = green / total
+        let cWeight = cyan / total
+        let bWeight = blue / total
 
-        // RED — sub presence, strong by 35%
-        let redSub = max(0, (sRatio - 0.20) * 3.5)
-        // ORANGE — from low-mid 200–350 Hz
-        let redOrange = lmRatio * 0.70
-        let greenOrange = lmRatio * 0.20
-        // GREEN — bright green from 350–900 Hz
-        let greenMid = mRatio * 1.8
-        // CYAN — bright cyan from 900–5000 Hz
-        let greenCyan = umRatio * 0.55
-        let blueCyan = umRatio * 0.90
-        // BLUE — from 5000+ Hz air
-        let blueHigh = hRatio * 1.2
+        var r = rWeight * 1.00 + oWeight * 0.92 + gWeight * 0.46 + cWeight * 0.18 + bWeight * 0.48
+        var g = rWeight * 0.05 + oWeight * 0.46 + gWeight * 1.00 + cWeight * 0.54 + bWeight * 0.10
+        var b = rWeight * 0.08 + oWeight * 0.04 + gWeight * 0.06 + cWeight * 1.00 + bWeight * 1.00
+
+        let lowPresence = min(1, rWeight + oWeight * 0.7)
+        let highPresence = min(1, cWeight * 0.75 + bWeight)
+        let lowHighBlend = min(lowPresence, highPresence) * min(1, (cyan + blue) * 1.35)
+        r += lowHighBlend * 0.10
+        g -= lowHighBlend * 0.16
+        b += lowHighBlend * 0.48
+
+        let average = (r + g + b) / 3
+        let saturation: CGFloat = 1.45
+        r = average + (r - average) * saturation
+        g = average + (g - average) * saturation
+        b = average + (b - average) * saturation
+
+        let lift = min(0.12, max(red, max(orange, max(green, max(cyan, blue)))) * 0.08 + transient * 0.10)
 
         return Color(
-            red: min(1, redSub + redOrange),
-            green: min(1, greenOrange + greenMid + greenCyan),
-            blue: min(1, blueCyan + blueHigh)
+            red: min(1, max(0, r + lift)),
+            green: min(1, max(0, g + lift)),
+            blue: min(1, max(0, b + lift))
         )
     }
+
+    private func transientStrength(red: CGFloat, orange: CGFloat, green: CGFloat, cyan: CGFloat, blue: CGFloat) -> CGFloat {
+        let strongest = max(red, max(orange, max(green, max(cyan, blue))))
+        return max(0, min(1, (strongest - 0.55) * 1.7))
+    }
+
 }
 
 struct MBLevelMeter: View {
@@ -184,7 +241,7 @@ struct MBCorrelationMeter: View {
                     }
                 }
             }
-            .frame(height: 28 * uiScale)
+            .frame(height: 30 * uiScale)
 
             HStack(spacing: 0) {
                 Text("-1").frame(width: 20, alignment: .leading)
@@ -197,6 +254,7 @@ struct MBCorrelationMeter: View {
             .foregroundColor(Color(white: 0.2))
         }
         .frame(maxWidth: .infinity)
+        .padding(.top, 5 * uiScale)
     }
 }
 
@@ -270,8 +328,8 @@ struct MBGoniometerView: View {
                     context.stroke(trace, with: .color(traceColor.opacity(0.48)), lineWidth: 0.75)
                 }
             }
-            .frame(height: 72 * uiScale)
-            .overlay(Rectangle().stroke(Color(white: 0.08)))
+            .frame(height: 76 * uiScale)
+            .overlay(Rectangle().stroke(Color(white: 0.06)))
         }
         .frame(maxWidth: .infinity)
     }

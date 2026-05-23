@@ -7,6 +7,7 @@ struct TemperPlayerApp: App {
     @StateObject private var playerState: PlayerState
     @StateObject private var playback: PlaybackController
     @AppStorage("uiScale") private var uiScale: Double = 1.15
+    private let menuBarController: MenuBarController
 
     init() {
         let audioManager = AudioManager()
@@ -24,6 +25,14 @@ struct TemperPlayerApp: App {
         _playback = StateObject(wrappedValue: playback)
 
         ImportService.shared.setDatabase(library)
+
+        menuBarController = MenuBarController(
+            playerState: playerState,
+            audioManager: audioManager,
+            playback: playback,
+            library: library,
+            importService: ImportService.shared
+        )
 
         DispatchQueue.main.async {
             NSApp.setActivationPolicy(.regular)

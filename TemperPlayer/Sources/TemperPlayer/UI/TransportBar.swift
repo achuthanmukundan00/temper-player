@@ -7,11 +7,10 @@ struct TransportBar: View {
     @Environment(\.uiScale) var uiScale
 
     var body: some View {
-        HStack(spacing: 8 * uiScale) {
-            Text(">").foregroundColor(Color(white: 0.5))
-
+        HStack(spacing: 10 * uiScale) {
             Text(playerState.displayPath)
-                .foregroundColor(Color(white: 0.7))
+                .font(.system(size: 9 * uiScale, design: .monospaced))
+                .foregroundColor(Color(white: 0.55))
                 .lineLimit(1)
 
             Spacer()
@@ -25,36 +24,30 @@ struct TransportBar: View {
             }
             .foregroundColor(Color(white: 0.35))
 
-            Text("\u{2502}").foregroundColor(Color(white: 0.12))
-
             Text("\(playerState.timeString) / \(playerState.durationString)")
                 .font(.system(size: 9 * uiScale, design: .monospaced))
-                .foregroundColor(Color(white: 0.35))
+                .foregroundColor(Color(white: 0.5))
 
-            Text("\u{2502}").foregroundColor(Color(white: 0.12))
+            HStack(spacing: 4 * uiScale) {
+                Text("vol:\(Int(playerState.volume * 100))")
+                    .font(.system(size: 8 * uiScale, design: .monospaced))
+                    .foregroundColor(Color(white: 0.3))
 
-            Text("vol:\(Int(playerState.volume * 100))")
-                .font(.system(size: 9 * uiScale, design: .monospaced))
-                .foregroundColor(Color(white: 0.35))
-
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Rectangle().fill(Color(white: 0.06))
-                    Rectangle().fill(Color(white: 0.35))
-                        .frame(width: geo.size.width * CGFloat(playerState.volume))
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(Color(white: 0.06))
+                        Rectangle().fill(Color(white: 0.45))
+                            .frame(width: geo.size.width * CGFloat(playerState.volume))
+                    }
+                    .gesture(DragGesture(minimumDistance: 0).onChanged { v in
+                        let vol = Float(min(1, max(0, v.location.x / geo.size.width)))
+                        playback.setVolume(vol)
+                    })
                 }
-                .gesture(DragGesture(minimumDistance: 0).onChanged { v in
-                    let vol = Float(min(1, max(0, v.location.x / geo.size.width)))
-                    playback.setVolume(vol)
-                })
+                .frame(width: 32 * uiScale, height: 4 * uiScale)
             }
-            .frame(width: 28 * uiScale, height: 4 * uiScale)
-
-            Text("\(Int(uiScale * 100))%")
-                .font(.system(size: 7 * uiScale, design: .monospaced))
-                .foregroundColor(Color(white: 0.25))
         }
-        .padding(.horizontal, 12 * uiScale)
+        .padding(.horizontal, 14 * uiScale)
         .frame(height: 34 * uiScale)
         .background(Color.black)
         .overlay(Rectangle().fill(Color(white: 0.06)).frame(height: 1).frame(maxHeight: .infinity, alignment: .top))
