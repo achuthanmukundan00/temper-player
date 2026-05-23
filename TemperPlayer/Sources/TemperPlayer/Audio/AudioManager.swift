@@ -27,7 +27,7 @@ class AudioManager: ObservableObject {
     var onTrackFinished: (() -> Void)?
 
     init() {
-        analyzer = RealtimeAnalyzer(engine: engine)
+        analyzer = RealtimeAnalyzer(engine: engine, tapNode: playerNode)
         engine.attach(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
         try? engine.start()
