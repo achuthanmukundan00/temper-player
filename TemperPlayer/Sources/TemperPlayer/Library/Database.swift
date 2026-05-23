@@ -312,6 +312,37 @@ class Database: ObservableObject {
     loadPlaylists()
   }
 
+  func batchUpdateTrackMetadata(ids: [String], title: String?, artist: String?, album: String?) {
+    guard !ids.isEmpty else { return }
+    let sql = "UPDATE tracks SET title = ?, artist = ?, album = ? WHERE id = ?"
+    var stmt: OpaquePointer?
+    sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil)
+    for id in ids {
+      sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+      sqlite3_bind_text(stmt, 1, (title as NSString?)?.utf8String, -1, nil)
+      sqlite3_bind_text(stmt, 2, (artist as NSString?)?.utf8String, -1, nil)
+      sqlite3_bind_text(stmt, 3, (album as NSString?)?.utf8String, -1, nil)
+      sqlite3_bind_text(stmt, 4, (id as NSString).utf8String, -1, nil)
+      sqlite3_step(stmt)
+      sqlite3_finalize(stmt)
+    }
+    sqlite3_exec(db, "COMMIT", nil, nil, nil)
+    loadTracks()
+  }
+
+  func updateTrackMetadata(id: String, title: String?, artist: String?, album: String?) {
+    let sql = "UPDATE tracks SET title = ?, artist = ?, album = ? WHERE id = ?"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (title as NSString?)?.utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 2, (artist as NSString?)?.utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 3, (album as NSString?)?.utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 4, (id as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+    loadTracks()
+  }
+
   func clearPlaylist(id: String) {
     let sql = "DELETE FROM playlist_tracks WHERE playlist_id = ?"
     var stmt: OpaquePointer?
