@@ -6,3 +6,6 @@ zig-out/
 # Swift build artifacts
 .build/
 .DS_Store
+
+# Release artifacts
+releases/
