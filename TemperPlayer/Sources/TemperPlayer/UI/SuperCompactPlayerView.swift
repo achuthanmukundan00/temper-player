@@ -17,12 +17,12 @@ struct SuperCompactPlayerView: View {
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(track.title ?? URL(fileURLWithPath: track.path).deletingPathExtension().lastPathComponent)
-                            .font(.system(size: 10 * uiScale, design: .monospaced))
+                            .font(.system(size: 10 * uiScale))
                             .foregroundColor(.white)
                             .lineLimit(1)
                         if let artist = track.artist {
                             Text(artist)
-                                .font(.system(size: 8 * uiScale, design: .monospaced))
+                                .font(.system(size: 8 * uiScale))
                                 .foregroundColor(Color(white: 0.45))
                                 .lineLimit(1)
                         }
@@ -31,27 +31,30 @@ struct SuperCompactPlayerView: View {
                     Spacer()
 
                     HStack(spacing: 10 * uiScale) {
-                        Text("\u{23EE}")
-                            .font(.system(size: 9 * uiScale, design: .monospaced))
-                            .foregroundColor(Color(white: 0.45))
-                            .frame(width: 18 * uiScale, height: 18 * uiScale)
-                            .onTapGesture { playback.previous() }
-
-                        ZStack {
-                            Circle()
-                                .stroke(Color(white: 0.3), lineWidth: 1)
-                                .frame(width: 20 * uiScale, height: 20 * uiScale)
-                            Text(playerState.isPlaying ? "\u{25A0}" : "\u{25B6}")
-                                .font(.system(size: 8 * uiScale, design: .monospaced))
-                                .foregroundColor(.white)
+                        Button(action: { playback.previous() }) {
+                            Image(systemName: "backward.fill")
+                                .font(.system(size: 9 * uiScale, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 18 * uiScale, height: 18 * uiScale)
                         }
-                        .onTapGesture { playback.togglePlayPause() }
+                        .buttonStyle(.plain)
 
-                        Text("\u{23ED}")
-                            .font(.system(size: 9 * uiScale, design: .monospaced))
-                            .foregroundColor(Color(white: 0.45))
-                            .frame(width: 18 * uiScale, height: 18 * uiScale)
-                            .onTapGesture { playback.next() }
+                        Button(action: { playback.togglePlayPause() }) {
+                            Image(systemName: playerState.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 8 * uiScale, weight: .medium))
+                                .foregroundColor(.white)
+                                .frame(width: 20 * uiScale, height: 20 * uiScale)
+                                .background(Circle().stroke(Color(white: 0.3), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button(action: { playback.next() }) {
+                            Image(systemName: "forward.fill")
+                                .font(.system(size: 9 * uiScale, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 18 * uiScale, height: 18 * uiScale)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 10 * uiScale)
@@ -61,9 +64,9 @@ struct SuperCompactPlayerView: View {
                 GeometryReader { geo in
                     let progress = playerState.duration > 0 ? CGFloat(playerState.currentTime / playerState.duration) : 0
                     ZStack(alignment: .leading) {
-                        Rectangle().fill(Color(white: 0.1)).frame(height: 1.5)
-                        Rectangle()
-                            .fill(Color(white: 0.6))
+                        Capsule().fill(.quaternary).frame(height: 1.5)
+                        Capsule()
+                            .fill(.secondary)
                             .frame(width: max(2, geo.size.width * progress), height: 1.5)
                     }
                 }
@@ -72,12 +75,15 @@ struct SuperCompactPlayerView: View {
             .background(Color.black)
         } else {
             HStack {
-                Text("\u{25B6} TemperPlayer")
-                    .font(.system(size: 10, design: .monospaced))
+                Image(systemName: "play.fill")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                Text("TemperPlayer")
+                    .font(.system(size: 10))
                     .foregroundColor(Color(white: 0.25))
                 Spacer()
-                Text("resize wider to browse")
-                    .font(.system(size: 8, design: .monospaced))
+                Text("Resize wider to browse")
+                    .font(.system(size: 8))
                     .foregroundColor(Color(white: 0.15))
             }
             .padding(.horizontal, 12)
@@ -92,12 +98,17 @@ struct SuperCompactPlayerView: View {
             Image(nsImage: nsImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .clipped()
-                .overlay(Rectangle().stroke(Color(white: 0.15), lineWidth: 0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 3))
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(.quaternary, lineWidth: 0.5))
         } else {
-            Rectangle()
-                .fill(Color(white: 0.1))
-                .overlay(Rectangle().stroke(Color(white: 0.15), lineWidth: 0.5))
+            RoundedRectangle(cornerRadius: 3)
+                .fill(.quaternary.opacity(0.3))
+                .overlay(
+                    Image(systemName: "music.note")
+                        .font(.system(size: 8, weight: .light))
+                        .foregroundStyle(.quaternary)
+                )
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(.quaternary, lineWidth: 0.5))
         }
     }
 }

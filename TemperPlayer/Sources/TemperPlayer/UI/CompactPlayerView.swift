@@ -18,11 +18,11 @@ struct CompactPlayerView: View {
 
                 VStack(spacing: 3 * uiScale) {
                     Text(track.title ?? URL(fileURLWithPath: track.path).deletingPathExtension().lastPathComponent)
-                        .font(.system(size: 14 * uiScale, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 14 * uiScale, weight: .semibold))
                         .foregroundColor(.white)
                         .lineLimit(1)
                     Text(track.artist ?? "Unknown Artist")
-                        .font(.system(size: 11 * uiScale, design: .monospaced))
+                        .font(.system(size: 11 * uiScale))
                         .foregroundColor(Color(white: 0.5))
                         .lineLimit(1)
                 }
@@ -31,29 +31,31 @@ struct CompactPlayerView: View {
                     .frame(maxWidth: 320 * uiScale)
 
                 HStack(spacing: 18 * uiScale) {
-                    compactButton("\u{23EE}") { playback.previous() }
-                    compactButton("\u{25C0}") { playback.seek(by: -5) }
+                    compactButton(systemName: "backward.fill") { playback.previous() }
+                    compactButton(systemName: "gobackward.5") { playback.seek(by: -5) }
 
-                    ZStack {
-                        Circle()
-                            .stroke(Color(white: 0.2), lineWidth: 1)
-                            .frame(width: 34 * uiScale, height: 34 * uiScale)
-                        Text(playerState.isPlaying ? "\u{25A0}" : "\u{25B6}")
-                            .font(.system(size: 13 * uiScale, design: .monospaced))
+                    Button(action: { playback.togglePlayPause() }) {
+                        Image(systemName: playerState.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 13 * uiScale, weight: .medium))
                             .foregroundColor(.white)
+                            .frame(width: 34 * uiScale, height: 34 * uiScale)
+                            .background(Circle().stroke(.secondary, lineWidth: 1))
                     }
-                    .onTapGesture { playback.togglePlayPause() }
+                    .buttonStyle(.plain)
 
-                    compactButton("\u{25B6}") { playback.seek(by: 5) }
-                    compactButton("\u{23ED}") { playback.next() }
+                    compactButton(systemName: "goforward.5") { playback.seek(by: 5) }
+                    compactButton(systemName: "forward.fill") { playback.next() }
                 }
             } else {
-                VStack(spacing: 6 * uiScale) {
+                VStack(spacing: 8 * uiScale) {
+                    Image(systemName: "music.note.list")
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(.quaternary)
                     Text("TemperPlayer")
-                        .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(Color(white: 0.3))
-                    Text("load a track in full mode")
-                        .font(.system(size: 10, design: .monospaced))
+                    Text("Load a track in the main window")
+                        .font(.system(size: 10))
                         .foregroundColor(Color(white: 0.2))
                 }
             }
@@ -70,20 +72,27 @@ struct CompactPlayerView: View {
             Image(nsImage: nsImage)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .clipped()
-                .overlay(Rectangle().stroke(Color(white: 0.12), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary, lineWidth: 0.5))
         } else {
-            Rectangle()
-                .fill(Color(white: 0.08))
-                .overlay(Rectangle().stroke(Color(white: 0.12), lineWidth: 1))
+            RoundedRectangle(cornerRadius: 6)
+                .fill(.quaternary.opacity(0.2))
+                .overlay(
+                    Image(systemName: "music.note")
+                        .font(.system(size: 24, weight: .light))
+                        .foregroundStyle(.quaternary)
+                )
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary, lineWidth: 0.5))
         }
     }
 
-    private func compactButton(_ label: String, action: @escaping () -> Void) -> some View {
-        Text(label)
-            .font(.system(size: 11 * uiScale, design: .monospaced))
-            .foregroundColor(Color(white: 0.5))
-            .frame(width: 26 * uiScale, height: 26 * uiScale)
-            .onTapGesture { action() }
+    private func compactButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11 * uiScale, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 26 * uiScale, height: 26 * uiScale)
+        }
+        .buttonStyle(.plain)
     }
 }

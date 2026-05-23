@@ -10,8 +10,8 @@ struct PlayBar: View {
     var body: some View {
         HStack(spacing: 6 * uiScale) {
             Text(playerState.timeString)
-                .font(.system(size: 9 * uiScale, design: .monospaced))
-                .foregroundColor(Color(white: 0.4))
+                .font(.system(size: 9 * uiScale))
+                .foregroundStyle(.tertiary)
                 .frame(width: 44 * uiScale, alignment: .leading)
 
             GeometryReader { geo in
@@ -19,12 +19,12 @@ struct PlayBar: View {
                 let fillW = geo.size.width * progress
 
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(Color(white: 0.1))
+                    Capsule()
+                        .fill(.quaternary)
                         .frame(height: 4 * uiScale)
 
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(Color(white: 0.7))
+                    Capsule()
+                        .fill(.secondary)
                         .frame(width: fillW, height: 4 * uiScale)
 
                     Circle()
@@ -49,13 +49,13 @@ struct PlayBar: View {
             .frame(height: 20 * uiScale)
 
             Text(playerState.durationString)
-                .font(.system(size: 9 * uiScale, design: .monospaced))
-                .foregroundColor(Color(white: 0.25))
+                .font(.system(size: 9 * uiScale))
+                .foregroundStyle(.tertiary)
                 .frame(width: 44 * uiScale, alignment: .trailing)
 
             VStack(alignment: .trailing, spacing: 1) {
                 Text(String(format: "P:%.1f", analyzer.peak))
-                    .font(.system(size: 7 * uiScale, design: .monospaced))
+                    .font(.system(size: 7 * uiScale))
                     .foregroundColor(analyzer.peak > 0.9 ? .red : Color(white: 0.2))
             }
             .frame(width: 32 * uiScale)
