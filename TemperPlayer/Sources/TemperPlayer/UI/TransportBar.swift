@@ -3,6 +3,7 @@ import SwiftUI
 struct TransportBar: View {
     @EnvironmentObject var audioManager: AudioManager
     @EnvironmentObject var playerState: PlayerState
+    @EnvironmentObject var playback: PlaybackController
     @Environment(\.uiScale) var uiScale
 
     var body: some View {
@@ -16,11 +17,11 @@ struct TransportBar: View {
             Spacer()
 
             HStack(spacing: 6 * uiScale) {
-                transportButton("\u{2508}\u{25C0}") { previousTrack() }
-                transportButton("\u{25C0}") { audioManager.seek(to: max(0, playerState.currentTime - 5)) }
+                transportButton("\u{2508}\u{25C0}") { playback.previous() }
+                transportButton("\u{25C0}") { playback.seek(by: -5) }
                 playPauseButton
-                transportButton("\u{25B6}") { audioManager.seek(to: min(playerState.duration, playerState.currentTime + 5)) }
-                transportButton("\u{25B6}\u{2508}") { nextTrack() }
+                transportButton("\u{25B6}") { playback.seek(by: 5) }
+                transportButton("\u{25B6}\u{2508}") { playback.next() }
             }
             .foregroundColor(Color(white: 0.35))
 
@@ -44,8 +45,7 @@ struct TransportBar: View {
                 }
                 .gesture(DragGesture(minimumDistance: 0).onChanged { v in
                     let vol = Float(min(1, max(0, v.location.x / geo.size.width)))
-                    playerState.volume = vol
-                    audioManager.setVolume(vol)
+                    playback.setVolume(vol)
                 })
             }
             .frame(width: 28 * uiScale, height: 4 * uiScale)
@@ -75,31 +75,6 @@ struct TransportBar: View {
     }
 
     private func togglePlay() {
-        if playerState.isPlaying {
-            audioManager.pause()
-            playerState.isPlaying = false
-        } else if let track = playerState.currentTrack {
-            audioManager.play(track: track.path)
-            playerState.isPlaying = true
-        }
-    }
-
-    private func previousTrack() {
-        guard !playerState.queue.isEmpty, let current = playerState.currentTrack,
-              let idx = playerState.queue.firstIndex(of: current) else {
-            audioManager.seek(to: 0); return
-        }
-        let t = playerState.queue[max(0, idx - 1)]
-        playerState.currentTrack = t
-        audioManager.play(track: t.path); playerState.isPlaying = true
-    }
-
-    private func nextTrack() {
-        guard !playerState.queue.isEmpty, let current = playerState.currentTrack,
-              let idx = playerState.queue.firstIndex(of: current),
-              idx + 1 < playerState.queue.count else { return }
-        let t = playerState.queue[idx + 1]
-        playerState.currentTrack = t
-        audioManager.play(track: t.path); playerState.isPlaying = true
+        playback.togglePlayPause()
     }
 }
