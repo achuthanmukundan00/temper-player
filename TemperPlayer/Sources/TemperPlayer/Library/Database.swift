@@ -21,7 +21,7 @@ class Database: ObservableObject {
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
     let path = dir.appendingPathComponent("library.db").path
-    sqlite3_open(path, &db)
+    sqlite3_open_v2(path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
   }
 
   private func createSchema() {
@@ -69,6 +69,17 @@ class Database: ObservableObject {
           FOREIGN KEY (playlist_id) REFERENCES playlists(id),
           FOREIGN KEY (track_id) REFERENCES tracks(id)
       );
+      CREATE TABLE IF NOT EXISTS play_history (
+          id        INTEGER PRIMARY KEY AUTOINCREMENT,
+          track_id  TEXT NOT NULL,
+          played_at TEXT NOT NULL,
+          FOREIGN KEY (track_id) REFERENCES tracks(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
+      CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);
+      CREATE INDEX IF NOT EXISTS idx_tracks_date_added ON tracks(date_added);
+      CREATE INDEX IF NOT EXISTS idx_play_history_played_at ON play_history(played_at);
+      CREATE INDEX IF NOT EXISTS idx_playlist_tracks_position ON playlist_tracks(playlist_id, position);
       """
     _ = sqlite3_exec(db, sql, nil, nil, nil)
   }
@@ -276,12 +287,95 @@ class Database: ObservableObject {
     sqlite3_bind_text(stmt, 2, (trackId as NSString).utf8String, -1, nil)
     sqlite3_step(stmt)
     sqlite3_finalize(stmt)
+    reindexPlaylist(playlistId: playlistId)
     DispatchQueue.main.async { self.loadPlaylists() }
   }
 
   func tracksForPlaylist(_ playlistId: String) -> [Track] {
     trackIdsForPlaylist(playlistId: playlistId).compactMap { tid in
       tracks.first { $0.id == tid }
+    }
+  }
+
+  func renamePlaylist(id: String, name: String) {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    let sql = "UPDATE playlists SET name = ?, modified = ? WHERE id = ?"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+    let now = ISO8601DateFormatter().string(from: Date())
+    sqlite3_bind_text(stmt, 1, (trimmed as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 2, (now as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 3, (id as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+    loadPlaylists()
+  }
+
+  func clearPlaylist(id: String) {
+    let sql = "DELETE FROM playlist_tracks WHERE playlist_id = ?"
+    var stmt: OpaquePointer?
+    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+    loadPlaylists()
+  }
+
+  func moveTrackInPlaylist(playlistId: String, trackId: String, by offset: Int) {
+    var ids = trackIdsForPlaylist(playlistId: playlistId)
+    guard let index = ids.firstIndex(of: trackId) else { return }
+    let newIndex = max(0, min(ids.count - 1, index + offset))
+    guard newIndex != index else { return }
+    ids.remove(at: index)
+    ids.insert(trackId, at: newIndex)
+    updatePlaylistOrder(playlistId: playlistId, trackIds: ids)
+    loadPlaylists()
+  }
+
+  func recordPlayback(trackId: String) {
+    let iso = ISO8601DateFormatter()
+    let nowDate = Date()
+    let now = iso.string(from: nowDate)
+
+    var stmt: OpaquePointer?
+    let insert = "INSERT INTO play_history (track_id, played_at) VALUES (?,?)"
+    sqlite3_prepare_v2(db, insert, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (trackId as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 2, (now as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+
+    let update = "UPDATE tracks SET last_played = ?, play_count = play_count + 1 WHERE id = ?"
+    sqlite3_prepare_v2(db, update, -1, &stmt, nil)
+    sqlite3_bind_text(stmt, 1, (now as NSString).utf8String, -1, nil)
+    sqlite3_bind_text(stmt, 2, (trackId as NSString).utf8String, -1, nil)
+    sqlite3_step(stmt)
+    sqlite3_finalize(stmt)
+
+    if let index = tracks.firstIndex(where: { $0.id == trackId }) {
+      tracks[index].lastPlayed = nowDate
+      tracks[index].playCount += 1
+      // Re-assign to trigger @Published update in SwiftUI
+      self.tracks = self.tracks
+    }
+  }
+
+  private func reindexPlaylist(playlistId: String) {
+    let ids = trackIdsForPlaylist(playlistId: playlistId)
+    updatePlaylistOrder(playlistId: playlistId, trackIds: ids)
+  }
+
+  private func updatePlaylistOrder(playlistId: String, trackIds: [String]) {
+    let sql = "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?"
+    var stmt: OpaquePointer?
+    for (position, trackId) in trackIds.enumerated() {
+      sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+      sqlite3_bind_int(stmt, 1, Int32(position))
+      sqlite3_bind_text(stmt, 2, (playlistId as NSString).utf8String, -1, nil)
+      sqlite3_bind_text(stmt, 3, (trackId as NSString).utf8String, -1, nil)
+      sqlite3_step(stmt)
+      sqlite3_finalize(stmt)
     }
   }
 
