@@ -18,7 +18,8 @@ pub fn analyze(path: [:0]const u8) !MasteringMetrics {
     const channels = decoder.channels;
     const total_frames = decoder.total_pcm_frames;
 
-    var buf: [4096]f32 = undefined;
+    const buf = try std.heap.c_allocator.alloc(f32, @as(usize, @intCast(4096)) * @as(usize, @intCast(channels)));
+    defer std.heap.c_allocator.free(buf);
     var total_read: i64 = 0;
     var peak: f32 = 0;
     var sum_sq: f64 = 0;

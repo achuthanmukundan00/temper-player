@@ -37,7 +37,7 @@ export fn decode_open(path: [*:0]const u8) ?*anyopaque {
 export fn decode_read_frames(h: *anyopaque, buf: [*]f32, frame_count: i32) i32 {
     if (frame_count <= 0) return 0;
     const decoder: *Decoder = @ptrCast(@alignCast(h));
-    return decoder.readFrames(buf[0..@intCast(frame_count)], frame_count);
+    return decoder.readFrames(buf[0..@as(usize, @intCast(frame_count)) * @as(usize, @intCast(decoder.channels))], frame_count);
 }
 
 export fn decode_seek(h: *anyopaque, pcm_frame: i64) i32 {
