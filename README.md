@@ -1,3 +1,10 @@
+
+<div>
+  <h1 align="center">temperplayer</h1>
+<p align="center">
+<img width="150" height="150" alt="temperplayer logo" src="https://github.com/user-attachments/assets/0da60d87-9cf4-4d85-aa6d-a42abab27372" />
+</p>
+</div>
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%2014%2B-blue?logo=apple" alt="Platform">
   <img src="https://img.shields.io/badge/language-Swift%205.9-orange?logo=swift" alt="Swift">
@@ -5,8 +12,6 @@
   <img src="https://img.shields.io/badge/version-0.0.1-blueviolet" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
 </p>
-
-# TemperPlayer
 
 A fast, native audiophile music player for macOS. Built with SwiftUI and a custom Zig audio engine for minimal latency and maximum format support.
 
