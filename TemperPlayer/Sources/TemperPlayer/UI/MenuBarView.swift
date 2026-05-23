@@ -86,7 +86,7 @@ struct MenuBarView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
 
-                // Mini progress bar
+                // Mini progress bar — scrubbable
                 GeometryReader { geo in
                     let progress = playerState.duration > 0 ? CGFloat(playerState.currentTime / playerState.duration) : 0
                     ZStack(alignment: .leading) {
@@ -97,10 +97,23 @@ struct MenuBarView: View {
                             .fill(.secondary)
                             .frame(width: max(4, geo.size.width * progress), height: 3)
                     }
+                    .frame(height: 16) // tall hit target
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { v in
+                                let p = max(0, min(1, v.location.x / geo.size.width))
+                                playerState.currentTime = p * playerState.duration
+                            }
+                            .onEnded { v in
+                                let p = max(0, min(1, v.location.x / geo.size.width))
+                                playback.seek(to: p * playerState.duration)
+                            }
+                    )
                 }
-                .frame(height: 3)
+                .frame(height: 18)  // tall hit target with visual bar centered inside
                 .padding(.horizontal, 14)
-                .padding(.bottom, 14)
+                .padding(.bottom, 8)
 
             } else {
                 // Empty state

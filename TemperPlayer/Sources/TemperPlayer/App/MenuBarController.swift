@@ -65,6 +65,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             closePopover()
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            // Ensure popover appears above fullscreen apps
+            popover.contentViewController?.view.window?.level = .statusBar
             popover.contentViewController?.view.window?.makeKey()
 
             // Close popover when clicking outside
