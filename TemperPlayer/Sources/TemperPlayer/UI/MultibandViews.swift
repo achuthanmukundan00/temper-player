@@ -36,6 +36,7 @@ struct MultibandWaveformView: View {
                     guard count > 1 else { return }
 
                     let xStep = size.width / CGFloat(count)
+                    let scrollOffset = CGFloat(analyzer.waveformPhase) * xStep
                     let barWidth = max(1, xStep * 0.82)
 
                     for index in 0..<count {
@@ -46,7 +47,8 @@ struct MultibandWaveformView: View {
                         let h = max(0, min(1, CGFloat(high[index])))
                         let peak = min(1, pow(max(s * 0.98, max(lm * 0.95, max(m * 0.85, max(um * 0.88, h * 0.9)))), 0.82))
                         let height = max(1, peak * usableHeight)
-                        let x = CGFloat(index) * xStep
+                        let x = CGFloat(index) * xStep - scrollOffset
+                        guard x + barWidth >= 0, x <= size.width else { continue }
                         let rect = CGRect(
                             x: x,
                             y: centerY - height,
