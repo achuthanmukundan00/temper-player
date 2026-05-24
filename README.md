@@ -2,7 +2,8 @@
 <div>
   <h1 align="center">temperplayer</h1>
 <p align="center">
-<img width="150" height="150" alt="temperplayer logo" src="https://github.com/user-attachments/assets/0da60d87-9cf4-4d85-aa6d-a42abab27372" />
+<img width="1280" height="720" alt="temperplayer" src="https://github.com/user-attachments/assets/21460c7f-2bb7-4c37-8a1f-e367e1821284" />
+
 </p>
 </div>
 <p align="center">
