@@ -1,18 +1,18 @@
 
 <div>
   <h1 align="center">temperplayer</h1>
-<p align="center">
-<img width="1280" height="720" alt="temperplayer" src="https://github.com/user-attachments/assets/21460c7f-2bb7-4c37-8a1f-e367e1821284" />
-
-</p>
-</div>
-<p align="center">
+  <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%2014%2B-blue?logo=apple" alt="Platform">
   <img src="https://img.shields.io/badge/language-Swift%205.9-orange?logo=swift" alt="Swift">
   <img src="https://img.shields.io/badge/engine-Zig%20audio%20core-yellow?logo=zig" alt="Zig">
   <img src="https://img.shields.io/badge/version-0.0.1-blueviolet" alt="Version">
   <img src="https://img.shields.io/badge/license-MIT-brightgreen" alt="License">
 </p>
+<p align="center">
+<img width="1280" height="720" alt="temperplayer" src="https://github.com/user-attachments/assets/21460c7f-2bb7-4c37-8a1f-e367e1821284" />
+
+</p>
+</div>
 
 A fast, native audiophile music player for macOS. Built with SwiftUI and a custom Zig audio engine for minimal latency and maximum format support.
 
