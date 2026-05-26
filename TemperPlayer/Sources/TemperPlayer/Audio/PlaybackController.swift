@@ -97,13 +97,29 @@ final class PlaybackController: ObservableObject {
         playerState.moveQueueItem(from: source, to: destination)
     }
 
+    func setPitchShift(_ cents: Float) {
+        audioManager.setPitchShift(cents)
+    }
+
     func setVolume(_ volume: Float) {
         let clamped = max(0, min(1, volume))
         playerState.volume = clamped
         audioManager.setVolume(clamped)
     }
 
+    func toggleShuffle() {
+        playerState.toggleShuffle()
+    }
+
+    func cycleRepeatMode() {
+        playerState.cycleRepeatMode()
+    }
+
     private func playNextAfterFinish() {
+        if playerState.repeatMode == .one, let track = playerState.currentTrack {
+            startPreparedTrack(track)
+            return
+        }
         guard let next = playerState.advanceToNext() else {
             playerState.finishCurrentTrack()
             return
@@ -114,6 +130,7 @@ final class PlaybackController: ObservableObject {
     private func startPreparedTrack(_ track: Track) {
         audioManager.play(track: track.path)
         audioManager.setVolume(playerState.volume)
+        audioManager.setPitchShift(playerState.pitchShift)
         playerState.duration = track.duration > 0 ? track.duration : audioManager.duration
         playerState.isPlaying = true
         library.recordPlayback(trackId: track.id)

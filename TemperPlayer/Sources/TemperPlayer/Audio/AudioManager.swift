@@ -6,11 +6,13 @@ class AudioManager: ObservableObject {
     private let engine = AVAudioEngine()
     let analyzer: RealtimeAnalyzer
     private let playerNode = AVAudioPlayerNode()
+    private let timePitchNode = AVAudioUnitTimePitch()
     private var decoder: DecoderBridge?
     private var avAudioFile: AVAudioFile?
     private var isAVFoundationTrack = false
     @Published var isPlaying = false
     @Published var currentTime: Double = 0
+    @Published var pitchShift: Float = 0
 
     private var currentTrackPath: String?
     private var currentFrame: Int64 = 0
@@ -29,7 +31,9 @@ class AudioManager: ObservableObject {
     init() {
         analyzer = RealtimeAnalyzer(engine: engine)
         engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+        engine.attach(timePitchNode)
+        engine.connect(playerNode, to: timePitchNode, format: nil)
+        engine.connect(timePitchNode, to: engine.mainMixerNode, format: nil)
         try? engine.start()
     }
 
@@ -56,6 +60,7 @@ class AudioManager: ObservableObject {
         playbackGeneration += 1
         finishNotified = false
         analyzer.reset()
+        timePitchNode.pitch = 0
         let generation = playbackGeneration
 
         if decoderFormats.contains(ext) {
@@ -76,6 +81,7 @@ class AudioManager: ObservableObject {
         analyzer.removeTap()
         analyzer.reset()
         playerNode.stop()
+        engine.reset()
         stopTimeTimer()
         decoder?.close()
         decoder = nil
@@ -130,6 +136,13 @@ class AudioManager: ObservableObject {
         playerNode.scheduleFile(file, at: nil) { [weak self] in
             self?.finishTrack(generation: generation)
         }
+
+        do {
+            try engine.start()
+        } catch {
+            return
+        }
+
         playerNode.play()
         isPlaying = true
     }
@@ -266,6 +279,12 @@ class AudioManager: ObservableObject {
 
     func setVolume(_ volume: Float) {
         playerNode.volume = volume
+    }
+
+    func setPitchShift(_ cents: Float) {
+        let clamped = max(-1200, min(1200, cents))
+        pitchShift = clamped
+        timePitchNode.pitch = clamped
     }
 
     var duration: Double {

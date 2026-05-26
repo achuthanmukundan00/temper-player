@@ -19,6 +19,9 @@ private struct AnalyzerSnapshot {
     let waveformNegative: [Float]
     let waveformScrollPhase: Float
     let goniometerPoints: [CGPoint]
+    let goniometerBassPoints: [CGPoint]
+    let goniometerMidPoints: [CGPoint]
+    let goniometerHighPoints: [CGPoint]
     let correlation: Float
     let bandLevels: [Float]
 }
@@ -228,6 +231,14 @@ final class RealtimeAnalyzer: ObservableObject {
     private var lowpass400Alpha: Float = 0
     private var lowpass1300Alpha: Float = 0
     private var lowpass5000Alpha: Float = 0
+
+    // Per-band goniometer filter states (two-pole per channel)
+    private var gonLowL: Float = 0, gonLowL2: Float = 0
+    private var gonLowR: Float = 0, gonLowR2: Float = 0
+    private var gonMidL: Float = 0, gonMidL2: Float = 0
+    private var gonMidR: Float = 0, gonMidR2: Float = 0
+    private var gonLowAlpha: Float = 0
+    private var gonMidAlpha: Float = 0
     private var framesPerWaveformPoint = 147
     private var waveformScrollPhase: Float = 0
     private var waveformHistoryBands: [[Float]] = [[], [], [], [], [], []]
@@ -244,6 +255,9 @@ final class RealtimeAnalyzer: ObservableObject {
     // Ring buffers
     private var goniometerSamples: [CGPoint] = []
     private let maxGoniometerSamples = 720
+    private var goniometerBassSamples: [CGPoint] = []
+    private var goniometerMidSamples: [CGPoint] = []
+    private var goniometerHighSamples: [CGPoint] = []
     private var spectrumDisplayBars: [Float]
 
     // Published state
@@ -255,6 +269,9 @@ final class RealtimeAnalyzer: ObservableObject {
     var waveformVisiblePointCount: Int { waveformPointCount }
     private(set) var waveformPhase: Float = 0
     private(set) var goniometerPoints: [CGPoint] = []
+    private(set) var goniometerBassPoints: [CGPoint] = []
+    private(set) var goniometerMidPoints: [CGPoint] = []
+    private(set) var goniometerHighPoints: [CGPoint] = []
     private(set) var correlation: Float = 0
     private(set) var bandLevels: [Float] = [0, 0, 0]
     private(set) var bandCorrelations: [Float] = [0, 0, 0]
@@ -360,6 +377,9 @@ final class RealtimeAnalyzer: ObservableObject {
 
     func reset() {
         goniometerSamples.removeAll(keepingCapacity: true)
+        goniometerBassSamples.removeAll(keepingCapacity: true)
+        goniometerMidSamples.removeAll(keepingCapacity: true)
+        goniometerHighSamples.removeAll(keepingCapacity: true)
         fftHistoryWriteIndex = 0
         fftHistoryCount = 0
         waveformHistoryBands = [[], [], [], [], [], []]
@@ -402,6 +422,9 @@ final class RealtimeAnalyzer: ObservableObject {
             self.waveformNegative = []
             self.waveformPhase = 0
             self.goniometerPoints = []
+            self.goniometerBassPoints = []
+            self.goniometerMidPoints = []
+            self.goniometerHighPoints = []
             self.correlation = 0
             self.bandLevels = [0, 0, 0]
             self.bandCorrelations = [0, 0, 0]
@@ -530,18 +553,62 @@ final class RealtimeAnalyzer: ObservableObject {
 
         let corr: Float
         let gPoints: [CGPoint]
+        let gBassPoints: [CGPoint]
+        let gMidPoints: [CGPoint]
+        let gHighPoints: [CGPoint]
         if hasRight {
             corr = computeCorrelation(left: captureLeft, right: captureRight, offset: offset, count: len)
             gPoints = makeGoniometerPoints(left: captureLeft, right: captureRight, offset: offset, count: len)
+            gBassPoints = processGoniometerBand(
+                left: captureLeft, right: captureRight,
+                offset: offset, count: len,
+                alpha: gonLowAlpha,
+                leftState: &gonLowL, leftState2: &gonLowL2,
+                rightState: &gonLowR, rightState2: &gonLowR2
+            )
+            gMidPoints = processGoniometerBand(
+                left: captureLeft, right: captureRight,
+                offset: offset, count: len,
+                alpha: gonMidAlpha,
+                leftState: &gonMidL, leftState2: &gonMidL2,
+                rightState: &gonMidR, rightState2: &gonMidR2
+            )
+            // High band: subtract the mid-pass filtered signal from raw
+            gHighPoints = processGoniometerBandHigh(
+                left: captureLeft, right: captureRight,
+                offset: offset, count: len,
+                midLeft: gonMidL2, midRight: gonMidR2
+            )
         } else {
             corr = 0
             gPoints = []
+            gBassPoints = []
+            gMidPoints = []
+            gHighPoints = []
         }
 
         if !gPoints.isEmpty {
             goniometerSamples.append(contentsOf: gPoints)
             if goniometerSamples.count > maxGoniometerSamples {
                 goniometerSamples.removeFirst(goniometerSamples.count - maxGoniometerSamples)
+            }
+        }
+        if !gBassPoints.isEmpty {
+            goniometerBassSamples.append(contentsOf: gBassPoints)
+            if goniometerBassSamples.count > maxGoniometerSamples {
+                goniometerBassSamples.removeFirst(goniometerBassSamples.count - maxGoniometerSamples)
+            }
+        }
+        if !gMidPoints.isEmpty {
+            goniometerMidSamples.append(contentsOf: gMidPoints)
+            if goniometerMidSamples.count > maxGoniometerSamples {
+                goniometerMidSamples.removeFirst(goniometerMidSamples.count - maxGoniometerSamples)
+            }
+        }
+        if !gHighPoints.isEmpty {
+            goniometerHighSamples.append(contentsOf: gHighPoints)
+            if goniometerHighSamples.count > maxGoniometerSamples {
+                goniometerHighSamples.removeFirst(goniometerHighSamples.count - maxGoniometerSamples)
             }
         }
 
@@ -559,6 +626,9 @@ final class RealtimeAnalyzer: ObservableObject {
             waveformNegative: waveformNegativeHistory,
             waveformScrollPhase: waveformScrollPhase,
             goniometerPoints: goniometerSamples,
+            goniometerBassPoints: goniometerBassSamples,
+            goniometerMidPoints: goniometerMidSamples,
+            goniometerHighPoints: goniometerHighSamples,
             correlation: corr,
             bandLevels: bLevels
         )
@@ -586,6 +656,9 @@ final class RealtimeAnalyzer: ObservableObject {
         waveformNegative = snapshot.waveformNegative
         waveformPhase = snapshot.waveformScrollPhase
         goniometerPoints = snapshot.goniometerPoints
+        goniometerBassPoints = snapshot.goniometerBassPoints
+        goniometerMidPoints = snapshot.goniometerMidPoints
+        goniometerHighPoints = snapshot.goniometerHighPoints
         correlation = smoothScalar(current: correlation, target: snapshot.correlation)
         smoothArray(&bandLevels, target: snapshot.bandLevels)
         bandCorrelations = [correlation, correlation, correlation]
@@ -684,7 +757,7 @@ final class RealtimeAnalyzer: ObservableObject {
     }
 
     private func publishDisplayOnlyFrame(elapsedSeconds: Double) {
-        guard !isFrozen, !waveformBands.isEmpty else { return }
+        guard !isFrozen, !waveformBands.isEmpty, !(waveformBands.first?.isEmpty ?? true) else { return }
         objectWillChange.send()
         let phaseAdvance = Float(Double(max(1, sampleRate)) * elapsedSeconds / Double(max(1, framesPerWaveformPoint)))
         waveformPhase = (waveformPhase + phaseAdvance).truncatingRemainder(dividingBy: 1)
@@ -993,6 +1066,9 @@ final class RealtimeAnalyzer: ObservableObject {
         lowpass400Alpha  = 1 - exp(-2 * .pi * (400  * compensate) / safeRate)
         lowpass1300Alpha = 1 - exp(-2 * .pi * (1300 * compensate) / safeRate)
         lowpass5000Alpha = 1 - exp(-2 * .pi * (5000 * compensate) / safeRate)
+        // Goniometer band filter alphas (two-pole)
+        gonLowAlpha = 1 - exp(-2 * .pi * (250 * compensate) / safeRate)
+        gonMidAlpha = 1 - exp(-2 * .pi * (5000 * compensate) / safeRate)
         framesPerWaveformPoint = max(32, Int(safeRate / 110))
         configureSpectrumMapping(for: safeRate)
     }
@@ -1206,6 +1282,54 @@ final class RealtimeAnalyzer: ObservableObject {
             goniometerPointScratch.append(CGPoint(x: CGFloat(left[index]), y: CGFloat(right[index])))
         }
         return goniometerPointScratch
+    }
+
+    // MARK: - Goniometer band processing helpers
+
+    private func processGoniometerBand(
+        left: [Float], right: [Float],
+        offset: Int, count: Int,
+        alpha: Float,
+        leftState: inout Float, leftState2: inout Float,
+        rightState: inout Float, rightState2: inout Float
+    ) -> [CGPoint] {
+        let n = min(count, left.count - offset, right.count - offset)
+        let step = max(1, n / 96)
+        var points: [CGPoint] = []
+        points.reserveCapacity(n / step + 1)
+        for i in stride(from: 0, to: n, by: step) {
+            let idx = offset + i
+            let l = left[idx]
+            let r = right[idx]
+            let fl = twoPoleLowpass(input: l, state: &leftState, state2: &leftState2, alpha: alpha)
+            let fr = twoPoleLowpass(input: r, state: &rightState, state2: &rightState2, alpha: alpha)
+            points.append(CGPoint(x: CGFloat(fl), y: CGFloat(fr)))
+        }
+        return points
+    }
+
+    private func processGoniometerBandHigh(
+        left: [Float], right: [Float],
+        offset: Int, count: Int,
+        midLeft: Float, midRight: Float
+    ) -> [CGPoint] {
+        let n = min(count, left.count - offset, right.count - offset)
+        let step = max(1, n / 96)
+        var points: [CGPoint] = []
+        points.reserveCapacity(n / step + 1)
+        for i in stride(from: 0, to: n, by: step) {
+            let idx = offset + i
+            let rawL = left[idx]
+            let rawR = right[idx]
+            points.append(CGPoint(x: CGFloat(rawL - midLeft), y: CGFloat(rawR - midRight)))
+        }
+        return points
+    }
+
+    private func twoPoleLowpass(input: Float, state: inout Float, state2: inout Float, alpha: Float) -> Float {
+        state += alpha * (input - state)
+        state2 += alpha * (state - state2)
+        return state2
     }
 
     deinit {

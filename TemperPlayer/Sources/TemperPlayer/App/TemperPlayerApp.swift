@@ -106,6 +106,12 @@ class PlayerState: ObservableObject {
     @Published var selectedTrackId: String?
     @Published var selectedTrackIds: Set<String> = []
     @Published var volume: Float = 1.0
+    @Published var pitchShift: Float = 0
+    @Published var isShuffled = false
+    @Published var repeatMode: RepeatMode = .off
+    private var originalQueue: [Track] = []
+
+    enum RepeatMode: Int { case off = 0, all, one }
 
     var upcomingQueue: [Track] {
         guard let queueIndex else { return queue }
@@ -153,6 +159,19 @@ class PlayerState: ObservableObject {
         }
         queueTitle = title
         setCurrent(track)
+        if isShuffled {
+            originalQueue = queue
+            var rest = queue
+            if let qi = queueIndex, qi + 1 < queue.count {
+                rest = Array(queue[(qi + 1)...])
+            } else {
+                rest = []
+            }
+            rest.shuffle()
+            if let qi = queueIndex {
+                queue = Array(queue[0...qi]) + rest
+            }
+        }
     }
 
     func enqueue(_ track: Track) {
@@ -175,6 +194,39 @@ class PlayerState: ObservableObject {
         }
     }
 
+    func toggleShuffle() {
+        isShuffled.toggle()
+        if isShuffled {
+            originalQueue = queue
+            shuffleRemaining()
+        } else {
+            guard !originalQueue.isEmpty else { return }
+            if let current = currentTrack, let origIndex = originalQueue.firstIndex(where: { $0.id == current.id }) {
+                queue = originalQueue
+                queueIndex = origIndex
+            } else {
+                queue = originalQueue
+                queueIndex = min(queueIndex ?? 0, queue.count - 1)
+            }
+            originalQueue = []
+        }
+    }
+
+    func cycleRepeatMode() {
+        switch repeatMode {
+        case .off: repeatMode = .all
+        case .all: repeatMode = .one
+        case .one: repeatMode = .off
+        }
+    }
+
+    private func shuffleRemaining() {
+        guard let qi = queueIndex, qi + 1 < queue.count else { return }
+        var rest = Array(queue[(qi + 1)...])
+        rest.shuffle()
+        queue = Array(queue[0...qi]) + rest
+    }
+
     func advanceToNext() -> Track? {
         ensureCurrentQueue()
         if queueIndex == nil, let first = queue.first {
@@ -182,11 +234,21 @@ class PlayerState: ObservableObject {
             setCurrent(first)
             return first
         }
-        guard let index = queueIndex, index + 1 < queue.count else { return nil }
-        queueIndex = index + 1
-        let next = queue[index + 1]
-        setCurrent(next)
-        return next
+        guard let index = queueIndex else { return nil }
+        if index + 1 < queue.count {
+            queueIndex = index + 1
+            let next = queue[index + 1]
+            setCurrent(next)
+            return next
+        }
+        // End of queue — wrap if repeat all
+        if repeatMode == .all {
+            if isShuffled { queue.shuffle() }
+            queueIndex = 0
+            setCurrent(queue[0])
+            return queue[0]
+        }
+        return nil
     }
 
     func retreatToPrevious() -> Track? {

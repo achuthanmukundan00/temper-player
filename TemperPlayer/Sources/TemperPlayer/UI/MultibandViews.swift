@@ -392,35 +392,62 @@ struct MBGoniometerView: View {
                     horiz.addLine(to: CGPoint(x: center.x + radius, y: center.y))
                     context.stroke(horiz, with: .color(Color(white: 0.06)), lineWidth: 0.5)
 
-                    guard !points.isEmpty else { return }
-
                     let scale = radius * 0.92
-                    var trace = Path()
-                    var didMove = false
-                    for pt in points {
-                        let left = max(-1, min(1, pt.x))
-                        let right = max(-1, min(1, pt.y))
-                        let mid = (left + right) * 0.5
-                        let side = (left - right) * 0.5
-                        let dx = side * scale
-                        let dy = mid * scale
-                        guard hypot(dx, dy) <= radius else { continue }
-                        let x = center.x + dx
-                        let y = center.y - dy
-                        let mapped = CGPoint(x: x, y: y)
-                        if didMove {
-                            trace.addLine(to: mapped)
-                        } else {
-                            trace.move(to: mapped)
-                            didMove = true
+                    context.blendMode = .screen
+
+                    // Bass dots (red)
+                    let bassPts = analyzer.goniometerBassPoints
+                    if !bassPts.isEmpty {
+                        for pt in bassPts {
+                            let l = max(-1, min(1, pt.x))
+                            let r = max(-1, min(1, pt.y))
+                            let mid = (l + r) * 0.5
+                            let side = (l - r) * 0.5
+                            let dx = side * scale
+                            let dy = mid * scale
+                            guard hypot(dx, dy) <= radius else { continue }
+                            let x = center.x + dx
+                            let y = center.y - dy
+                            context.fill(Path(ellipseIn: CGRect(x: x - 1.5, y: y - 1.5, width: 3, height: 3)),
+                                         with: .color(Color(red: 1, green: 0, blue: 0).opacity(0.4)))
                         }
                     }
 
-                    let corr = analyzer.correlation
-                    let traceColor: Color = corr < -0.15
-                        ? Color(red: 0.95, green: 0.25, blue: 0.22)
-                        : Color(red: 0.45, green: 0.8, blue: 0.52)
-                    context.stroke(trace, with: .color(traceColor.opacity(0.48)), lineWidth: 0.75)
+                    // Mid dots (green)
+                    let midPts = analyzer.goniometerMidPoints
+                    if !midPts.isEmpty {
+                        for pt in midPts {
+                            let l = max(-1, min(1, pt.x))
+                            let r = max(-1, min(1, pt.y))
+                            let mid = (l + r) * 0.5
+                            let side = (l - r) * 0.5
+                            let dx = side * scale
+                            let dy = mid * scale
+                            guard hypot(dx, dy) <= radius else { continue }
+                            let x = center.x + dx
+                            let y = center.y - dy
+                            context.fill(Path(ellipseIn: CGRect(x: x - 1.2, y: y - 1.2, width: 2.4, height: 2.4)),
+                                         with: .color(Color(red: 0, green: 1, blue: 0).opacity(0.35)))
+                        }
+                    }
+
+                    // High dots (blue)
+                    let highPts = analyzer.goniometerHighPoints
+                    if !highPts.isEmpty {
+                        for pt in highPts {
+                            let l = max(-1, min(1, pt.x))
+                            let r = max(-1, min(1, pt.y))
+                            let mid = (l + r) * 0.5
+                            let side = (l - r) * 0.5
+                            let dx = side * scale
+                            let dy = mid * scale
+                            guard hypot(dx, dy) <= radius else { continue }
+                            let x = center.x + dx
+                            let y = center.y - dy
+                            context.fill(Path(ellipseIn: CGRect(x: x - 1.0, y: y - 1.0, width: 2, height: 2)),
+                                         with: .color(Color(red: 0.2, green: 0.4, blue: 1).opacity(0.35)))
+                        }
+                    }
                 }
             }
             .frame(height: 76 * uiScale)
