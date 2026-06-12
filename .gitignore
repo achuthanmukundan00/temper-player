@@ -13,3 +13,4 @@ zig-out/
 
 # Release artifacts
 releases/
+*.dmg

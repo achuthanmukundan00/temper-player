@@ -6,8 +6,13 @@ class AudioManager: ObservableObject {
     private let engine = AVAudioEngine()
     let analyzer: RealtimeAnalyzer
     private let playerNode = AVAudioPlayerNode()
-    private let timePitchNode = AVAudioUnitTimePitch()
     private var decoder: DecoderBridge?
+    private var pitchShifter: PitchShifterBridge?
+    private let pumpQueue = DispatchQueue(label: "com.temperplayer.pitchpump", qos: .userInitiated)
+    private let pumpChunkFrames: AVAudioFrameCount = 4096
+    private let pumpBuffersInFlight = 2
+    // Confined to pumpQueue: generation whose EOF flush has already been emitted.
+    private var pumpFlushedGeneration = -1
     private var avAudioFile: AVAudioFile?
     private var isAVFoundationTrack = false
     @Published var isPlaying = false
@@ -31,9 +36,7 @@ class AudioManager: ObservableObject {
     init() {
         analyzer = RealtimeAnalyzer(engine: engine)
         engine.attach(playerNode)
-        engine.attach(timePitchNode)
-        engine.connect(playerNode, to: timePitchNode, format: nil)
-        engine.connect(timePitchNode, to: engine.mainMixerNode, format: nil)
+        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
         try? engine.start()
     }
 
@@ -60,7 +63,8 @@ class AudioManager: ObservableObject {
         playbackGeneration += 1
         finishNotified = false
         analyzer.reset()
-        timePitchNode.pitch = 0
+        analyzer.isFrozen = false
+        setPitchShift(0)
         let generation = playbackGeneration
 
         if decoderFormats.contains(ext) {
@@ -75,6 +79,10 @@ class AudioManager: ObservableObject {
         analyzer.installTap()
     }
 
+    private func reconnectAudioGraph() {
+        engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
+    }
+
     func stop() {
         playbackGeneration += 1
         finishNotified = true
@@ -82,9 +90,11 @@ class AudioManager: ObservableObject {
         analyzer.reset()
         playerNode.stop()
         engine.reset()
+        reconnectAudioGraph()
         stopTimeTimer()
         decoder?.close()
         decoder = nil
+        pitchShifter = nil
         avAudioFile = nil
         currentTrackPath = nil
         currentFrame = 0
@@ -133,18 +143,106 @@ class AudioManager: ObservableObject {
         avAudioFile = file
         isAVFoundationTrack = true
 
-        playerNode.scheduleFile(file, at: nil) { [weak self] in
-            self?.finishTrack(generation: generation)
-        }
-
         do {
             try engine.start()
         } catch {
             return
         }
 
+        startPitchedPump(file: file, generation: generation)
         playerNode.play()
         isPlaying = true
+    }
+
+    /// Stream an AVAudioFile through the Zig phase-vocoder pitch shifter.
+    /// The chain is mathematically transparent at 0 cents, so it always runs —
+    /// no graph swapping when the knob crosses zero.
+    private func startPitchedPump(file: AVAudioFile, generation: Int) {
+        let format = file.processingFormat
+
+        // Connect with the file's real format so AVAudioEngine inserts the
+        // correct sample-rate converter.  format:nil on a reset player node
+        // defaults to the hardware rate, which pitch-shifts 44.1k → 48k etc.
+        engine.disconnectNodeOutput(playerNode)
+        engine.connect(playerNode, to: engine.mainMixerNode, format: format)
+
+        let shifter = PitchShifterBridge(
+            sampleRate: format.sampleRate,
+            channels: Int(format.channelCount)
+        )
+        shifter?.setCents(pitchShift)
+        pitchShifter = shifter
+
+        for _ in 0..<pumpBuffersInFlight {
+            pumpQueue.async { [weak self] in
+                self?.pumpChunk(file: file, format: format, generation: generation)
+            }
+        }
+    }
+
+    /// Runs on pumpQueue. Reads one chunk, pitch-shifts it, schedules it.
+    /// Each buffer's completion handler pumps the next chunk, keeping
+    /// `pumpBuffersInFlight` chunks queued ahead of the render head.
+    private func pumpChunk(file: AVAudioFile, format: AVAudioFormat, generation: Int) {
+        guard generation == playbackGeneration, let shifter = pitchShifter else { return }
+
+        guard let inBuf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: pumpChunkFrames) else { return }
+        do {
+            try file.read(into: inBuf, frameCount: pumpChunkFrames)
+        } catch {
+            return
+        }
+
+        let inFrames = Int(inBuf.frameLength)
+        let isFinal = inFrames == 0
+        if isFinal {
+            // Two buffers run in flight; only the first EOF pump may flush.
+            guard pumpFlushedGeneration != generation else { return }
+            pumpFlushedGeneration = generation
+        }
+        // Headroom for stretch jitter: output ≈ input rate, but frame placement
+        // quantization can momentarily produce more.
+        let outCapacity = AVAudioFrameCount(inFrames + 8192)
+        guard let outBuf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: outCapacity),
+              let inData = inBuf.floatChannelData,
+              let outData = outBuf.floatChannelData else { return }
+
+        let stereo = format.channelCount >= 2
+        let produced: Int
+        if inFrames > 0 {
+            produced = shifter.process(
+                inL: inData[0],
+                inR: stereo ? inData[1] : nil,
+                inFrames: inFrames,
+                outL: outData[0],
+                outR: stereo ? outData[1] : nil,
+                outCap: Int(outCapacity)
+            )
+        } else {
+            // EOF: drain the window tail.
+            produced = shifter.flush(
+                outL: outData[0],
+                outR: stereo ? outData[1] : nil,
+                outCap: Int(outCapacity)
+            )
+        }
+
+        guard produced > 0 else {
+            if isFinal { finishTrack(generation: generation) }
+            return
+        }
+        outBuf.frameLength = AVAudioFrameCount(produced)
+
+        playerNode.scheduleBuffer(outBuf) { [weak self] in
+            guard let self, generation == self.playbackGeneration else { return }
+            if isFinal {
+                self.finishTrack(generation: generation)
+            } else {
+                self.pumpQueue.async {
+                    self.pumpChunk(file: file, format: format, generation: generation)
+                }
+            }
+        }
     }
 
     private func scheduleBuffer(format: AVAudioFormat, generation: Int) {
@@ -232,15 +330,9 @@ class AudioManager: ObservableObject {
 
             playerNode.stop()
             engine.reset()
+            reconnectAudioGraph()
 
-            playerNode.scheduleSegment(
-                file,
-                startingFrame: max(0, seekFrame),
-                frameCount: AVAudioFrameCount(remainingFrames),
-                at: nil
-            ) { [weak self] in
-                self?.finishTrack(generation: generation)
-            }
+            file.framePosition = max(0, seekFrame)
 
             do {
                 try engine.start()
@@ -248,6 +340,7 @@ class AudioManager: ObservableObject {
                 return
             }
 
+            startPitchedPump(file: file, generation: generation)
             analyzer.reinstallTap()
             if isPlaying { playerNode.play() }
         } else {
@@ -284,7 +377,10 @@ class AudioManager: ObservableObject {
     func setPitchShift(_ cents: Float) {
         let clamped = max(-1200, min(1200, cents))
         pitchShift = clamped
-        timePitchNode.pitch = clamped
+        let shifter = pitchShifter
+        pumpQueue.async {
+            shifter?.setCents(clamped)
+        }
     }
 
     var duration: Double {

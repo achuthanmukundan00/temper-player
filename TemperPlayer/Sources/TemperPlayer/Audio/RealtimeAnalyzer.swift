@@ -23,6 +23,7 @@ private struct AnalyzerSnapshot {
     let goniometerMidPoints: [CGPoint]
     let goniometerHighPoints: [CGPoint]
     let correlation: Float
+    let bandCorrelations: [Float]
     let bandLevels: [Float]
 }
 
@@ -239,6 +240,17 @@ final class RealtimeAnalyzer: ObservableObject {
     private var gonMidR: Float = 0, gonMidR2: Float = 0
     private var gonLowAlpha: Float = 0
     private var gonMidAlpha: Float = 0
+
+    // Per-band Pearson correlation accumulators (single-pass)
+    private var corrBassSumL: Float = 0, corrBassSumR: Float = 0
+    private var corrBassSumL2: Float = 0, corrBassSumR2: Float = 0
+    private var corrBassSumLR: Float = 0, corrBassCount: Int = 0
+    private var corrMidSumL: Float = 0, corrMidSumR: Float = 0
+    private var corrMidSumL2: Float = 0, corrMidSumR2: Float = 0
+    private var corrMidSumLR: Float = 0, corrMidCount: Int = 0
+    private var corrHighSumL: Float = 0, corrHighSumR: Float = 0
+    private var corrHighSumL2: Float = 0, corrHighSumR2: Float = 0
+    private var corrHighSumLR: Float = 0, corrHighCount: Int = 0
     private var framesPerWaveformPoint = 147
     private var waveformScrollPhase: Float = 0
     private var waveformHistoryBands: [[Float]] = [[], [], [], [], [], []]
@@ -412,6 +424,10 @@ final class RealtimeAnalyzer: ObservableObject {
         displayDrawDebt.withLock { $0 = 0 }
         lastDisplayTickTimeNs = 0
         visualFrameDebt = 0
+        resetBandCorrelationAccumulators()
+        // Reset goniometer filter states (shared with correlation accumulators)
+        gonLowL = 0; gonLowL2 = 0; gonLowR = 0; gonLowR2 = 0
+        gonMidL = 0; gonMidL2 = 0; gonMidR = 0; gonMidR2 = 0
         let update = { [weak self] in
             guard let self else { return }
             self.objectWillChange.send()
@@ -559,6 +575,9 @@ final class RealtimeAnalyzer: ObservableObject {
         if hasRight {
             corr = computeCorrelation(left: captureLeft, right: captureRight, offset: offset, count: len)
             gPoints = makeGoniometerPoints(left: captureLeft, right: captureRight, offset: offset, count: len)
+            // Accumulate per-band Pearson correlation data BEFORE goniometer
+            // processing so that the shared IIR states haven't been advanced yet.
+            accumulateBandCorrelations(left: captureLeft, right: captureRight, offset: offset, count: len)
             gBassPoints = processGoniometerBand(
                 left: captureLeft, right: captureRight,
                 offset: offset, count: len,
@@ -612,6 +631,31 @@ final class RealtimeAnalyzer: ObservableObject {
             }
         }
 
+        // Compute per-band correlations from accumulated Pearson data
+        let bCorrs: [Float]
+        if hasRight {
+            bCorrs = [
+                finishBandCorrelation(
+                    sumL: corrBassSumL, sumR: corrBassSumR,
+                    sumL2: corrBassSumL2, sumR2: corrBassSumR2,
+                    sumLR: corrBassSumLR, count: corrBassCount
+                ),
+                finishBandCorrelation(
+                    sumL: corrMidSumL, sumR: corrMidSumR,
+                    sumL2: corrMidSumL2, sumR2: corrMidSumR2,
+                    sumLR: corrMidSumLR, count: corrMidCount
+                ),
+                finishBandCorrelation(
+                    sumL: corrHighSumL, sumR: corrHighSumR,
+                    sumL2: corrHighSumL2, sumR2: corrHighSumR2,
+                    sumLR: corrHighSumLR, count: corrHighCount
+                )
+            ]
+            resetBandCorrelationAccumulators()
+        } else {
+            bCorrs = [0, 0, 0]
+        }
+
         let snapshot = AnalyzerSnapshot(
             frameCount: len,
             callbackTimeNs: callbackTimeNs,
@@ -630,6 +674,7 @@ final class RealtimeAnalyzer: ObservableObject {
             goniometerMidPoints: goniometerMidSamples,
             goniometerHighPoints: goniometerHighSamples,
             correlation: corr,
+            bandCorrelations: bCorrs,
             bandLevels: bLevels
         )
         enqueuePublish(snapshot)
@@ -661,7 +706,7 @@ final class RealtimeAnalyzer: ObservableObject {
         goniometerHighPoints = snapshot.goniometerHighPoints
         correlation = smoothScalar(current: correlation, target: snapshot.correlation)
         smoothArray(&bandLevels, target: snapshot.bandLevels)
-        bandCorrelations = [correlation, correlation, correlation]
+        smoothArray(&bandCorrelations, target: snapshot.bandCorrelations)
 
         recordRenderFrame()
         recordPublish(snapshot: snapshot, mainTimeNs: DispatchTime.now().uptimeNanoseconds)
@@ -1330,6 +1375,92 @@ final class RealtimeAnalyzer: ObservableObject {
         state += alpha * (input - state)
         state2 += alpha * (state - state2)
         return state2
+    }
+
+    // MARK: - Per-band Pearson correlation
+
+    /// Accumulate single-pass Pearson correlation sums for bass / mid / high bands.
+    /// Bass:  two-pole lowpass @ ~250 Hz.
+    /// Mid:   two-pole lowpass @ ~5 kHz minus the bass band.
+    /// High:  raw minus the mid band.
+    private func accumulateBandCorrelations(
+        left: [Float], right: [Float], offset: Int, count: Int
+    ) {
+        let n = min(count, left.count - offset, right.count - offset)
+        guard n > 0 else { return }
+
+        // Local filter states per band so we don't interfere with goniometer states.
+        var bassL = gonLowL2, bassL2 = gonLowL2
+        var bassR = gonLowR2, bassR2 = gonLowR2
+        var midL = gonMidL2, midL2 = gonMidL2
+        var midR = gonMidR2, midR2 = gonMidR2
+
+        for i in 0..<n {
+            let idx = offset + i
+            let rawL = left[idx]
+            let rawR = right[idx]
+
+            // Bass band (two-pole LP @ 250 Hz)
+            let bL = twoPoleLowpass(input: rawL, state: &bassL, state2: &bassL2, alpha: gonLowAlpha)
+            let bR = twoPoleLowpass(input: rawR, state: &bassR, state2: &bassR2, alpha: gonLowAlpha)
+            corrBassSumL  += bL
+            corrBassSumR  += bR
+            corrBassSumL2 += bL * bL
+            corrBassSumR2 += bR * bR
+            corrBassSumLR += bL * bR
+            corrBassCount += 1
+
+            // Mid band: LP @ 5 kHz minus bass
+            let mL = twoPoleLowpass(input: rawL, state: &midL, state2: &midL2, alpha: gonMidAlpha)
+            let mR = twoPoleLowpass(input: rawR, state: &midR, state2: &midR2, alpha: gonMidAlpha)
+            let midBandL = mL - bL
+            let midBandR = mR - bR
+            corrMidSumL  += midBandL
+            corrMidSumR  += midBandR
+            corrMidSumL2 += midBandL * midBandL
+            corrMidSumR2 += midBandR * midBandR
+            corrMidSumLR += midBandL * midBandR
+            corrMidCount += 1
+
+            // High band: raw minus mid
+            let highBandL = rawL - mL
+            let highBandR = rawR - mR
+            corrHighSumL  += highBandL
+            corrHighSumR  += highBandR
+            corrHighSumL2 += highBandL * highBandL
+            corrHighSumR2 += highBandR * highBandR
+            corrHighSumLR += highBandL * highBandR
+            corrHighCount += 1
+        }
+    }
+
+    /// Compute a Pearson correlation coefficient from accumulated single-pass sums.
+    ///   r = (n·Σxy − Σx·Σy) / √( (n·Σx² − (Σx)²) · (n·Σy² − (Σy)²) )
+    private func finishBandCorrelation(
+        sumL: Float, sumR: Float,
+        sumL2: Float, sumR2: Float,
+        sumLR: Float, count: Int
+    ) -> Float {
+        guard count > 0 else { return 0 }
+        let n = Float(count)
+        let num = n * sumLR - sumL * sumR
+        let denL = max(0, n * sumL2 - sumL * sumL)
+        let denR = max(0, n * sumR2 - sumR * sumR)
+        let denom = sqrt(denL * denR)
+        guard denom > 0 else { return 0 }
+        return max(-1, min(1, num / denom))
+    }
+
+    private func resetBandCorrelationAccumulators() {
+        corrBassSumL = 0; corrBassSumR = 0
+        corrBassSumL2 = 0; corrBassSumR2 = 0
+        corrBassSumLR = 0; corrBassCount = 0
+        corrMidSumL = 0; corrMidSumR = 0
+        corrMidSumL2 = 0; corrMidSumR2 = 0
+        corrMidSumLR = 0; corrMidCount = 0
+        corrHighSumL = 0; corrHighSumR = 0
+        corrHighSumL2 = 0; corrHighSumR2 = 0
+        corrHighSumLR = 0; corrHighCount = 0
     }
 
     deinit {
