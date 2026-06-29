@@ -94,6 +94,7 @@ class AudioManager: ObservableObject {
         stopTimeTimer()
         decoder?.close()
         decoder = nil
+        pitchShifter?.destroy()
         pitchShifter = nil
         avAudioFile = nil
         currentTrackPath = nil
@@ -166,6 +167,7 @@ class AudioManager: ObservableObject {
         engine.disconnectNodeOutput(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: format)
 
+        pitchShifter?.destroy()
         let shifter = PitchShifterBridge(
             sampleRate: format.sampleRate,
             channels: Int(format.channelCount)

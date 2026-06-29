@@ -5,7 +5,7 @@ const metadata_mod = @import("metadata.zig");
 const mastering_mod = @import("mastering.zig");
 const pitch_mod = @import("pitch.zig");
 
-threadlocal var gpa_instance: std.heap.DebugAllocator(.{}) = .{};
+var gpa_instance: std.heap.DebugAllocator(.{ .thread_safe = true }) = .{};
 
 pub const SampleFormat = extern struct {
     sample_rate: i32,
