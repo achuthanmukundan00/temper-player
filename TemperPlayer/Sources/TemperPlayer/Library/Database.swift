@@ -1,31 +1,51 @@
+import Combine
 import Foundation
 import SQLite3
+import os
 
 class Database: ObservableObject {
+  private static let logger = Logger(subsystem: "com.temperplayer", category: "database")
+  private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
   private var db: OpaquePointer?
+  private let iso = ISO8601DateFormatter()
+  private let legacyISO = ISO8601DateFormatter()
 
   @Published var tracks: [Track] = []
   @Published var selectedTrack: Track?
   @Published var playlists: [Playlist] = []
+  @Published var lastError: String?
 
-  init() {
-    open()
-    createSchema()
-    loadTracks()
-    loadPlaylists()
+  init(databaseURL: URL? = nil) {
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let opened = perform("Open library") {
+      let url = databaseURL ?? FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".temperplayer/library.db")
+      guard url.isFileURL else { throw DatabaseError("The database URL must be a local file.") }
+      try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+        let error = sqliteError("Open database")
+        if let db { sqlite3_close(db) }
+        db = nil
+        throw error
+      }
+      guard sqlite3_busy_timeout(db, 3_000) == SQLITE_OK else { throw sqliteError("Set busy timeout") }
+      try executeSQL("PRAGMA journal_mode=WAL")
+      try executeSQL("PRAGMA foreign_keys=ON")
+      let loaded = try transaction {
+        try createSchema()
+        return (try fetchTracks(), try fetchPlaylists())
+      }
+      tracks = loaded.0
+      playlists = loaded.1
+    }
+    if !opened {
+      if let db { sqlite3_close(db) }
+      db = nil
+    }
   }
 
-  private func open() {
-    let dir = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".temperplayer")
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-    let path = dir.appendingPathComponent("library.db").path
-    sqlite3_open_v2(path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
-  }
-
-  private func createSchema() {
-    let sql = """
+  private func createSchema() throws {
+    try executeSQL("""
       CREATE TABLE IF NOT EXISTS tracks (
           id              TEXT PRIMARY KEY,
           path            TEXT NOT NULL,
@@ -80,333 +100,462 @@ class Database: ObservableObject {
       CREATE INDEX IF NOT EXISTS idx_tracks_date_added ON tracks(date_added);
       CREATE INDEX IF NOT EXISTS idx_play_history_played_at ON play_history(played_at);
       CREATE INDEX IF NOT EXISTS idx_playlist_tracks_position ON playlist_tracks(playlist_id, position);
-      """
-    _ = sqlite3_exec(db, sql, nil, nil, nil)
+      """)
   }
 
   func insert(track: Track) {
-    let insert = """
-      INSERT OR REPLACE INTO tracks
-      (id, path, title, artist, album, album_artist, track_no, disc_no, year, genre,
-       duration, format, sample_rate, bit_depth, channels, bitrate, file_size, date_added,
-       artwork_path, dc_offset, lufs, true_peak, dynamic_range, phase_correlation)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-      """
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, insert, -1, &stmt, nil)
-
-    let iso = ISO8601DateFormatter()
-
-    sqlite3_bind_text(stmt, 1, (track.id as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (track.path as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 3, (track.title as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 4, (track.artist as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 5, (track.album as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 6, (track.albumArtist as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_int(stmt, 7, Int32(track.trackNo ?? 0))
-    sqlite3_bind_int(stmt, 8, Int32(track.discNo ?? 0))
-    sqlite3_bind_int(stmt, 9, Int32(track.year ?? 0))
-    sqlite3_bind_text(stmt, 10, (track.genre as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_double(stmt, 11, track.duration)
-    sqlite3_bind_text(stmt, 12, (track.format as NSString).utf8String, -1, nil)
-    sqlite3_bind_int(stmt, 13, Int32(track.sampleRate))
-    sqlite3_bind_int(stmt, 14, Int32(track.bitDepth))
-    sqlite3_bind_int(stmt, 15, Int32(track.channels))
-    sqlite3_bind_int(stmt, 16, Int32(track.bitrate))
-    sqlite3_bind_int(stmt, 17, Int32(track.fileSize))
-    sqlite3_bind_text(stmt, 18, (iso.string(from: track.dateAdded) as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 19, (track.artworkPath as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_double(stmt, 20, track.dcOffset ?? 0)
-    sqlite3_bind_double(stmt, 21, track.lufs ?? 0)
-    sqlite3_bind_double(stmt, 22, track.truePeak ?? 0)
-    sqlite3_bind_double(stmt, 23, track.dynamicRange ?? 0)
-    sqlite3_bind_double(stmt, 24, track.phaseCorrelation ?? 0)
-
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-    loadTracks()
+    perform("Save track") {
+      let saved = try transaction {
+        // Updating the existing row keeps its history and playlist foreign keys intact.
+        try execute("""
+          INSERT INTO tracks
+          (id, path, title, artist, album, album_artist, track_no, disc_no, year, genre,
+           duration, format, sample_rate, bit_depth, channels, bitrate, file_size, date_added,
+           last_played, play_count, artwork_path, dc_offset, lufs, true_peak, dynamic_range, phase_correlation)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET
+            path = excluded.path, title = excluded.title, artist = excluded.artist,
+            album = excluded.album, album_artist = excluded.album_artist,
+            track_no = excluded.track_no, disc_no = excluded.disc_no, year = excluded.year,
+            genre = excluded.genre, duration = excluded.duration, format = excluded.format,
+            sample_rate = excluded.sample_rate, bit_depth = excluded.bit_depth,
+            channels = excluded.channels, bitrate = excluded.bitrate, file_size = excluded.file_size,
+            artwork_path = excluded.artwork_path, dc_offset = excluded.dc_offset,
+            lufs = excluded.lufs, true_peak = excluded.true_peak,
+            dynamic_range = excluded.dynamic_range, phase_correlation = excluded.phase_correlation
+          """, [
+            .text(track.id), .text(track.path), .text(track.title), .text(track.artist),
+            .text(track.album), .text(track.albumArtist), .integer(track.trackNo),
+            .integer(track.discNo), .integer(track.year), .text(track.genre), .real(track.duration),
+            .text(track.format), .integer(track.sampleRate), .integer(track.bitDepth),
+            .integer(track.channels), .integer(track.bitrate), .integer(track.fileSize),
+            .text(iso.string(from: track.dateAdded)), .text(track.lastPlayed.map { iso.string(from: $0) }),
+            .integer(track.playCount), .text(track.artworkPath), .real(track.dcOffset),
+            .real(track.lufs), .real(track.truePeak), .real(track.dynamicRange), .real(track.phaseCorrelation),
+          ])
+        return try fetchTrack(id: track.id)
+      }
+      publishTracks([saved])
+    }
   }
 
   func loadTracks() {
-    var results: [Track] = []
-    let sql = "SELECT * FROM tracks ORDER BY date_added DESC"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-
-    let iso = ISO8601DateFormatter()
-
-    while sqlite3_step(stmt) == SQLITE_ROW {
-      let id = String(cString: sqlite3_column_text(stmt, 0))
-      let path = String(cString: sqlite3_column_text(stmt, 1))
-      let title = optStr(stmt, 2)
-      let artist = optStr(stmt, 3)
-      let album = optStr(stmt, 4)
-      let albumArtist = optStr(stmt, 5)
-      let trackNo = optInt(stmt, 6)
-      let discNo = optInt(stmt, 7)
-      let year = optInt(stmt, 8)
-      let genre = optStr(stmt, 9)
-      let duration = sqlite3_column_double(stmt, 10)
-      let format = optStr(stmt, 11) ?? ""
-      let sampleRate = Int(sqlite3_column_int(stmt, 12))
-      let bitDepth = Int(sqlite3_column_int(stmt, 13))
-      let channels = Int(sqlite3_column_int(stmt, 14))
-      let bitrate = Int(sqlite3_column_int(stmt, 15))
-      let fileSize = Int(sqlite3_column_int(stmt, 16))
-      let dateStr = String(cString: sqlite3_column_text(stmt, 17))
-      let dateAdded = iso.date(from: dateStr) ?? Date()
-      let lastPlayedStr = optStr(stmt, 18)
-      let lastPlayed: Date? = lastPlayedStr.flatMap { iso.date(from: $0) }
-      let playCount = Int(sqlite3_column_int(stmt, 19))
-      let artworkPath = optStr(stmt, 20)
-      let dcOffset = optDouble(stmt, 21)
-      let lufs = optDouble(stmt, 22)
-      let truePeak = optDouble(stmt, 23)
-      let dynamicRange = optDouble(stmt, 24)
-      let phaseCorrelation = optDouble(stmt, 25)
-
-      results.append(
-        Track(
-          id: id, path: path, title: title, artist: artist, album: album,
-          albumArtist: albumArtist, trackNo: trackNo, discNo: discNo, year: year,
-          genre: genre, duration: duration, format: format, sampleRate: sampleRate,
-          bitDepth: bitDepth, channels: channels, bitrate: bitrate, fileSize: fileSize,
-          dateAdded: dateAdded, lastPlayed: lastPlayed, playCount: playCount,
-          artworkPath: artworkPath, dcOffset: dcOffset, lufs: lufs, truePeak: truePeak,
-          dynamicRange: dynamicRange, phaseCorrelation: phaseCorrelation
-        ))
+    perform("Load tracks", clearErrorOnSuccess: false) {
+      let loaded = try fetchTracks()
+      tracks = loaded
+      if let selectedTrack { self.selectedTrack = loaded.first { $0.id == selectedTrack.id } }
     }
-    sqlite3_finalize(stmt)
-    self.tracks = results
   }
 
-  private func optStr(_ stmt: OpaquePointer?, _ idx: Int32) -> String? {
-    guard sqlite3_column_type(stmt, idx) != SQLITE_NULL else { return nil }
-    return String(cString: sqlite3_column_text(stmt, idx))
+  func deleteTrack(id: String) {
+    deleteTracks(ids: [id])
   }
 
-  private func optInt(_ stmt: OpaquePointer?, _ idx: Int32) -> Int? {
-    guard sqlite3_column_type(stmt, idx) != SQLITE_NULL else { return nil }
-    return Int(sqlite3_column_int(stmt, idx))
+  /// Removes only library records, never the audio files on disk.
+  @discardableResult
+  func deleteTracks(ids: Set<String>) -> Bool {
+    perform("Remove tracks") {
+      guard !ids.isEmpty else { return }
+      let updatedPlaylists = try transaction {
+        var affectedPlaylists = Set<String>()
+        for id in ids.sorted() {
+          let memberships: [String] = try query(
+            "SELECT playlist_id FROM playlist_tracks WHERE track_id = ?", [.text(id)]
+          ) { self.string($0, 0)! }
+          affectedPlaylists.formUnion(memberships)
+          // Explicit cascades also work with the schema used by existing libraries.
+          try execute("DELETE FROM play_history WHERE track_id = ?", [.text(id)])
+          try execute("DELETE FROM playlist_tracks WHERE track_id = ?", [.text(id)])
+          try execute("DELETE FROM tracks WHERE id = ?", [.text(id)])
+        }
+        for playlistId in affectedPlaylists.sorted() {
+          try reindexPlaylist(playlistId: playlistId)
+          try touchPlaylist(id: playlistId)
+        }
+        return try fetchPlaylists()
+      }
+      tracks.removeAll { ids.contains($0.id) }
+      if let selectedTrack, ids.contains(selectedTrack.id) { self.selectedTrack = nil }
+      playlists = updatedPlaylists
+    }
   }
 
-  private func optDouble(_ stmt: OpaquePointer?, _ idx: Int32) -> Double? {
-    guard sqlite3_column_type(stmt, idx) != SQLITE_NULL else { return nil }
-    return sqlite3_column_double(stmt, idx)
+  /// Replaces all three fields; nil and empty strings both clear a field.
+  func updateTrackMetadata(id: String, title: String?, artist: String?, album: String?) {
+    perform("Update track metadata") {
+      let updated = try transaction {
+        try execute("UPDATE tracks SET title = ?, artist = ?, album = ? WHERE id = ?", [
+          .text(metadataValue(title)), .text(metadataValue(artist)), .text(metadataValue(album)), .text(id),
+        ])
+        return try fetchTrack(id: id)
+      }
+      publishTracks([updated])
+    }
+  }
+
+  /// In a batch nil leaves a field unchanged; an empty string explicitly clears it.
+  func batchUpdateTrackMetadata(ids: [String], title: String?, artist: String?, album: String?) {
+    perform("Update track metadata") {
+      let columns: [(String, String?)] = [("title", title), ("artist", artist), ("album", album)]
+      let active = columns.filter { $0.1 != nil }
+      guard !ids.isEmpty, !active.isEmpty else { return }
+      // Column names come only from the fixed list above, never user input.
+      let sql = "UPDATE tracks SET " + active.map { "\($0.0) = ?" }.joined(separator: ", ") + " WHERE id = ?"
+      let values = active.map { Value.text(metadataValue($0.1)) }
+      let updated = try transaction {
+        try ids.map { id in
+          try execute(sql, values + [.text(id)])
+          return try fetchTrack(id: id)
+        }
+      }
+      publishTracks(updated)
+    }
+  }
+
+  func recordPlayback(trackId: String) {
+    perform("Record playback", clearErrorOnSuccess: false) {
+      let updated = try transaction {
+        let now = iso.string(from: Date())
+        try execute("INSERT INTO play_history (track_id, played_at) VALUES (?,?)", [.text(trackId), .text(now)])
+        try execute("UPDATE tracks SET last_played = ?, play_count = play_count + 1 WHERE id = ?", [.text(now), .text(trackId)])
+        return try fetchTrack(id: trackId)
+      }
+      publishTracks([updated])
+    }
   }
 
   // MARK: - Playlists
 
   func loadPlaylists() {
-    var results: [Playlist] = []
-    let sql = "SELECT * FROM playlists ORDER BY name ASC"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-
-    let iso = ISO8601DateFormatter()
-
-    while sqlite3_step(stmt) == SQLITE_ROW {
-      let id = String(cString: sqlite3_column_text(stmt, 0))
-      let name = String(cString: sqlite3_column_text(stmt, 1))
-      let desc = optStr(stmt, 2)
-      let createdStr = String(cString: sqlite3_column_text(stmt, 3))
-      let created = iso.date(from: createdStr) ?? Date()
-      let modifiedStr = String(cString: sqlite3_column_text(stmt, 4))
-      let modified = iso.date(from: modifiedStr) ?? Date()
-      let trackIds = trackIdsForPlaylist(playlistId: id)
-      results.append(Playlist(id: id, name: name, description: desc, created: created, modified: modified, tracks: trackIds))
-    }
-    sqlite3_finalize(stmt)
-    self.playlists = results
+    perform("Load playlists", clearErrorOnSuccess: false) { playlists = try fetchPlaylists() }
   }
 
-  private func trackIdsForPlaylist(playlistId: String) -> [String] {
-    var results: [String] = []
-    let sql = "SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (playlistId as NSString).utf8String, -1, nil)
-    while sqlite3_step(stmt) == SQLITE_ROW {
-      results.append(String(cString: sqlite3_column_text(stmt, 0)))
+  /// Kept source-compatible: the returned draft is saved only when lastError is nil.
+  func createPlaylist(name: String, trackIds: [String] = []) -> Playlist {
+    let now = Date()
+    let playlist = Playlist(id: UUID().uuidString, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                            description: nil, created: now, modified: now, tracks: [])
+    mutatePlaylists("Create playlist") {
+      guard !playlist.name.isEmpty else { throw DatabaseError("A playlist name cannot be empty.") }
+      let timestamp = iso.string(from: now)
+      try execute("INSERT INTO playlists (id, name, created, modified) VALUES (?,?,?,?)", [
+        .text(playlist.id), .text(playlist.name), .text(timestamp), .text(timestamp),
+      ])
+      var added = Set<String>()
+      for trackId in trackIds where added.insert(trackId).inserted {
+        try execute("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?,?,?)", [
+          .text(playlist.id), .text(trackId), .integer(added.count - 1),
+        ])
+      }
     }
-    sqlite3_finalize(stmt)
-    return results
-  }
-
-  func createPlaylist(name: String) -> Playlist {
-    let id = UUID().uuidString
-    let now = ISO8601DateFormatter().string(from: Date())
-    let sql = "INSERT INTO playlists (id, name, created, modified) VALUES (?,?,?,?)"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (name as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 3, (now as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 4, (now as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-    let p = Playlist(id: id, name: name, description: nil, created: Date(), modified: Date(), tracks: [])
-    DispatchQueue.main.async { self.loadPlaylists() }
-    return p
+    return playlists.first { $0.id == playlist.id } ?? playlist
   }
 
   func deletePlaylist(id: String) {
-    let delTracks = "DELETE FROM playlist_tracks WHERE playlist_id = ?"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, delTracks, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-
-    let del = "DELETE FROM playlists WHERE id = ?"
-    sqlite3_prepare_v2(db, del, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-    DispatchQueue.main.async { self.loadPlaylists() }
-  }
-
-  func addTrackToPlaylist(trackId: String, playlistId: String) {
-    let position = trackIdsForPlaylist(playlistId: playlistId).count
-    let sql = "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?,?,?)"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (playlistId as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (trackId as NSString).utf8String, -1, nil)
-    sqlite3_bind_int(stmt, 3, Int32(position))
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-    DispatchQueue.main.async { self.loadPlaylists() }
-  }
-
-  func removeTrackFromPlaylist(trackId: String, playlistId: String) {
-    let sql = "DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (playlistId as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (trackId as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-    reindexPlaylist(playlistId: playlistId)
-    DispatchQueue.main.async { self.loadPlaylists() }
-  }
-
-  func tracksForPlaylist(_ playlistId: String) -> [Track] {
-    trackIdsForPlaylist(playlistId: playlistId).compactMap { tid in
-      tracks.first { $0.id == tid }
+    mutatePlaylists("Delete playlist") {
+      try execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", [.text(id)])
+      try execute("DELETE FROM playlists WHERE id = ?", [.text(id)])
     }
   }
 
   func renamePlaylist(id: String, name: String) {
-    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    let sql = "UPDATE playlists SET name = ?, modified = ? WHERE id = ?"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-    let now = ISO8601DateFormatter().string(from: Date())
-    sqlite3_bind_text(stmt, 1, (trimmed as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (now as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 3, (id as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-    loadPlaylists()
-  }
-
-  func batchUpdateTrackMetadata(ids: [String], title: String?, artist: String?, album: String?) {
-    guard !ids.isEmpty else { return }
-    let sql = "UPDATE tracks SET title = ?, artist = ?, album = ? WHERE id = ?"
-    var stmt: OpaquePointer?
-    sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil)
-    for id in ids {
-      sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-      sqlite3_bind_text(stmt, 1, (title as NSString?)?.utf8String, -1, nil)
-      sqlite3_bind_text(stmt, 2, (artist as NSString?)?.utf8String, -1, nil)
-      sqlite3_bind_text(stmt, 3, (album as NSString?)?.utf8String, -1, nil)
-      sqlite3_bind_text(stmt, 4, (id as NSString).utf8String, -1, nil)
-      sqlite3_step(stmt)
-      sqlite3_finalize(stmt)
+    mutatePlaylists("Rename playlist") {
+      let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else { throw DatabaseError("A playlist name cannot be empty.") }
+      try requirePlaylist(id: id)
+      try execute("UPDATE playlists SET name = ?, modified = ? WHERE id = ?", [
+        .text(trimmed), .text(iso.string(from: Date())), .text(id),
+      ])
     }
-    sqlite3_exec(db, "COMMIT", nil, nil, nil)
-    loadTracks()
   }
 
-  func updateTrackMetadata(id: String, title: String?, artist: String?, album: String?) {
-    let sql = "UPDATE tracks SET title = ?, artist = ?, album = ? WHERE id = ?"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (title as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (artist as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 3, (album as NSString?)?.utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 4, (id as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-    loadTracks()
+  func addTrackToPlaylist(trackId: String, playlistId: String) {
+    addTracksToPlaylist(trackIds: [trackId], playlistId: playlistId)
+  }
+
+  @discardableResult
+  func addTracksToPlaylist(trackIds: [String], playlistId: String) -> Bool {
+    mutatePlaylists("Add tracks to playlist") {
+      try requirePlaylist(id: playlistId)
+      var ids = try trackIdsForPlaylist(playlistId: playlistId)
+      var existing = Set(ids)
+      let originalCount = ids.count
+      for trackId in trackIds where existing.insert(trackId).inserted {
+        try execute("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?,?,?)", [
+          .text(playlistId), .text(trackId), .integer(ids.count),
+        ])
+        ids.append(trackId)
+      }
+      if ids.count != originalCount {
+        try updatePlaylistOrder(playlistId: playlistId, trackIds: ids)
+        try touchPlaylist(id: playlistId)
+      }
+    }
+  }
+
+  func removeTrackFromPlaylist(trackId: String, playlistId: String) {
+    removeTracksFromPlaylist(trackIds: [trackId], playlistId: playlistId)
+  }
+
+  @discardableResult
+  func removeTracksFromPlaylist(trackIds: Set<String>, playlistId: String) -> Bool {
+    mutatePlaylists("Remove tracks from playlist") {
+      try requirePlaylist(id: playlistId)
+      let existing = try trackIdsForPlaylist(playlistId: playlistId)
+      let removed = existing.filter { trackIds.contains($0) }
+      for trackId in removed {
+        try execute("DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?", [.text(playlistId), .text(trackId)])
+      }
+      if !removed.isEmpty {
+        try reindexPlaylist(playlistId: playlistId)
+        try touchPlaylist(id: playlistId)
+      }
+    }
   }
 
   func clearPlaylist(id: String) {
-    let sql = "DELETE FROM playlist_tracks WHERE playlist_id = ?"
-    var stmt: OpaquePointer?
-    sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (id as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-    loadPlaylists()
-  }
-
-  func moveTrackInPlaylist(playlistId: String, trackId: String, by offset: Int) {
-    var ids = trackIdsForPlaylist(playlistId: playlistId)
-    guard let index = ids.firstIndex(of: trackId) else { return }
-    let newIndex = max(0, min(ids.count - 1, index + offset))
-    guard newIndex != index else { return }
-    ids.remove(at: index)
-    ids.insert(trackId, at: newIndex)
-    updatePlaylistOrder(playlistId: playlistId, trackIds: ids)
-    loadPlaylists()
-  }
-
-  func recordPlayback(trackId: String) {
-    let iso = ISO8601DateFormatter()
-    let nowDate = Date()
-    let now = iso.string(from: nowDate)
-
-    var stmt: OpaquePointer?
-    let insert = "INSERT INTO play_history (track_id, played_at) VALUES (?,?)"
-    sqlite3_prepare_v2(db, insert, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (trackId as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (now as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-
-    let update = "UPDATE tracks SET last_played = ?, play_count = play_count + 1 WHERE id = ?"
-    sqlite3_prepare_v2(db, update, -1, &stmt, nil)
-    sqlite3_bind_text(stmt, 1, (now as NSString).utf8String, -1, nil)
-    sqlite3_bind_text(stmt, 2, (trackId as NSString).utf8String, -1, nil)
-    sqlite3_step(stmt)
-    sqlite3_finalize(stmt)
-
-    if let index = tracks.firstIndex(where: { $0.id == trackId }) {
-      tracks[index].lastPlayed = nowDate
-      tracks[index].playCount += 1
-      // Re-assign to trigger @Published update in SwiftUI
-      self.tracks = self.tracks
+    mutatePlaylists("Clear playlist") {
+      try requirePlaylist(id: id)
+      try execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", [.text(id)])
+      try touchPlaylist(id: id)
     }
   }
 
-  private func reindexPlaylist(playlistId: String) {
-    let ids = trackIdsForPlaylist(playlistId: playlistId)
-    updatePlaylistOrder(playlistId: playlistId, trackIds: ids)
+  func moveTrackInPlaylist(playlistId: String, trackId: String, by offset: Int) {
+    mutatePlaylists("Reorder playlist") {
+      try requirePlaylist(id: playlistId)
+      var ids = try trackIdsForPlaylist(playlistId: playlistId)
+      guard let index = ids.firstIndex(of: trackId) else { throw DatabaseError("The track is not in this playlist.") }
+      let distance = max(-index, min(ids.count - 1 - index, offset))
+      guard distance != 0 else { return }
+      ids.remove(at: index)
+      ids.insert(trackId, at: index + distance)
+      try updatePlaylistOrder(playlistId: playlistId, trackIds: ids)
+      try touchPlaylist(id: playlistId)
+    }
   }
 
-  private func updatePlaylistOrder(playlistId: String, trackIds: [String]) {
-    let sql = "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?"
-    var stmt: OpaquePointer?
+  func tracksForPlaylist(_ playlistId: String) -> [Track] {
+    let byId = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+    return playlists.first { $0.id == playlistId }?.tracks.compactMap { byId[$0] } ?? []
+  }
+
+  @discardableResult
+  private func mutatePlaylists(_ operation: String, _ body: () throws -> Void) -> Bool {
+    perform(operation) {
+      let updated = try transaction {
+        try body()
+        return try fetchPlaylists()
+      }
+      playlists = updated
+    }
+  }
+
+  private func requirePlaylist(id: String) throws {
+    let ids: [String] = try query("SELECT id FROM playlists WHERE id = ?", [.text(id)]) { self.string($0, 0)! }
+    guard !ids.isEmpty else { throw DatabaseError("The playlist no longer exists.") }
+  }
+
+  private func touchPlaylist(id: String) throws {
+    try execute("UPDATE playlists SET modified = ? WHERE id = ?", [.text(iso.string(from: Date())), .text(id)])
+  }
+
+  private func reindexPlaylist(playlistId: String) throws {
+    try updatePlaylistOrder(playlistId: playlistId, trackIds: trackIdsForPlaylist(playlistId: playlistId))
+  }
+
+  private func updatePlaylistOrder(playlistId: String, trackIds: [String]) throws {
     for (position, trackId) in trackIds.enumerated() {
-      sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-      sqlite3_bind_int(stmt, 1, Int32(position))
-      sqlite3_bind_text(stmt, 2, (playlistId as NSString).utf8String, -1, nil)
-      sqlite3_bind_text(stmt, 3, (trackId as NSString).utf8String, -1, nil)
-      sqlite3_step(stmt)
-      sqlite3_finalize(stmt)
+      try execute("UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?", [
+        .integer(position), .text(playlistId), .text(trackId),
+      ])
+    }
+  }
+
+  // MARK: - Reading and publishing
+
+  private func fetchTracks() throws -> [Track] {
+    try query("SELECT * FROM tracks ORDER BY date_added DESC, id ASC") { self.readTrack($0) }
+  }
+
+  private func fetchTrack(id: String) throws -> Track {
+    let found = try query("SELECT * FROM tracks WHERE id = ?", [.text(id)]) { self.readTrack($0) }
+    guard let track = found.first else { throw DatabaseError("The track no longer exists.") }
+    return track
+  }
+
+  private func readTrack(_ stmt: OpaquePointer) -> Track {
+    Track(
+      id: string(stmt, 0)!, path: string(stmt, 1)!, title: string(stmt, 2), artist: string(stmt, 3),
+      album: string(stmt, 4), albumArtist: string(stmt, 5), trackNo: integer(stmt, 6),
+      discNo: integer(stmt, 7), year: integer(stmt, 8), genre: string(stmt, 9),
+      duration: sqlite3_column_double(stmt, 10), format: string(stmt, 11) ?? "",
+      sampleRate: Int(sqlite3_column_int64(stmt, 12)), bitDepth: Int(sqlite3_column_int64(stmt, 13)),
+      channels: Int(sqlite3_column_int64(stmt, 14)), bitrate: Int(sqlite3_column_int64(stmt, 15)),
+      fileSize: Int(sqlite3_column_int64(stmt, 16)), dateAdded: date(string(stmt, 17)) ?? .distantPast,
+      lastPlayed: date(string(stmt, 18)), playCount: Int(sqlite3_column_int64(stmt, 19)),
+      artworkPath: string(stmt, 20), dcOffset: real(stmt, 21), lufs: real(stmt, 22),
+      truePeak: real(stmt, 23), dynamicRange: real(stmt, 24), phaseCorrelation: real(stmt, 25)
+    )
+  }
+
+  private func fetchPlaylists() throws -> [Playlist] {
+    try query("SELECT id, name, description, created, modified FROM playlists ORDER BY name ASC, id ASC") { stmt in
+      let id = self.string(stmt, 0)!
+      return Playlist(id: id, name: self.string(stmt, 1)!, description: self.string(stmt, 2),
+                      created: self.date(self.string(stmt, 3)) ?? .distantPast,
+                      modified: self.date(self.string(stmt, 4)) ?? .distantPast,
+                      tracks: try self.trackIdsForPlaylist(playlistId: id))
+    }
+  }
+
+  private func trackIdsForPlaylist(playlistId: String) throws -> [String] {
+    try query("SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC, track_id ASC", [.text(playlistId)]) {
+      self.string($0, 0)!
+    }
+  }
+
+  private func publishTracks(_ updated: [Track]) {
+    var remaining = Dictionary(updated.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+    var result = tracks.map { remaining.removeValue(forKey: $0.id) ?? $0 }
+    // Metadata/playback updates do not change the import order; sort only new inserts.
+    if !remaining.isEmpty {
+      result.append(contentsOf: remaining.values)
+      result.sort { $0.dateAdded == $1.dateAdded ? $0.id < $1.id : $0.dateAdded > $1.dateAdded }
+    }
+    tracks = result
+    if let selectedTrack { self.selectedTrack = result.first { $0.id == selectedTrack.id } }
+  }
+
+  private func metadataValue(_ value: String?) -> String? {
+    value?.isEmpty == false ? value : nil
+  }
+
+  private func date(_ value: String?) -> Date? {
+    value.flatMap { iso.date(from: $0) ?? legacyISO.date(from: $0) }
+  }
+
+  private func string(_ stmt: OpaquePointer, _ index: Int32) -> String? {
+    guard sqlite3_column_type(stmt, index) != SQLITE_NULL,
+          let bytes = sqlite3_column_text(stmt, index) else { return nil }
+    return String(decoding: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(stmt, index))), as: UTF8.self)
+  }
+
+  private func integer(_ stmt: OpaquePointer, _ index: Int32) -> Int? {
+    sqlite3_column_type(stmt, index) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(stmt, index))
+  }
+
+  private func real(_ stmt: OpaquePointer, _ index: Int32) -> Double? {
+    sqlite3_column_type(stmt, index) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, index)
+  }
+
+  // MARK: - Checked SQLite operations
+
+  private struct DatabaseError: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+  }
+
+  private enum Value {
+    case text(String?)
+    case integer(Int?)
+    case real(Double?)
+  }
+
+  @discardableResult
+  private func perform(_ operation: String, clearErrorOnSuccess: Bool = true, _ body: () throws -> Void) -> Bool {
+    do {
+      try body()
+      // Background playback and refreshes must not dismiss an outstanding UI error.
+      if clearErrorOnSuccess { lastError = nil }
+      return true
+    } catch {
+      let message = "\(operation): \(error.localizedDescription)"
+      Self.logger.error("\(message)")
+      lastError = message
+      return false
+    }
+  }
+
+  private func sqliteError(_ operation: String) -> DatabaseError {
+    let detail = db.map { String(cString: sqlite3_errmsg($0)) } ?? "Database is not open."
+    return DatabaseError("\(operation): \(detail)")
+  }
+
+  private func executeSQL(_ sql: String) throws {
+    guard let db else { throw sqliteError("Execute SQL") }
+    var message: UnsafeMutablePointer<CChar>?
+    let result = sqlite3_exec(db, sql, nil, nil, &message)
+    defer { sqlite3_free(message) }
+    guard result == SQLITE_OK else {
+      throw DatabaseError(message.map { String(cString: $0) } ?? sqliteError("Execute SQL").message)
+    }
+  }
+
+  private func withStatement<T>(_ sql: String, _ values: [Value], _ body: (OpaquePointer) throws -> T) throws -> T {
+    guard let db else { throw sqliteError("Prepare SQL") }
+    var statement: OpaquePointer?
+    let result = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+    defer { sqlite3_finalize(statement) }
+    guard result == SQLITE_OK, let statement else { throw sqliteError("Prepare SQL") }
+    for (offset, value) in values.enumerated() {
+      let index = Int32(offset + 1)
+      let result: Int32
+      switch value {
+      case .text(let text?):
+        let bytes = text.utf8CString
+        guard let count = Int32(exactly: bytes.count - 1) else { throw DatabaseError("Text exceeds SQLite's size limit.") }
+        result = bytes.withUnsafeBufferPointer {
+          sqlite3_bind_text(statement, index, $0.baseAddress, count, Self.transient)
+        }
+      case .integer(let number?):
+        result = sqlite3_bind_int64(statement, index, Int64(number))
+      case .real(let number?):
+        result = sqlite3_bind_double(statement, index, number)
+      default:
+        result = sqlite3_bind_null(statement, index)
+      }
+      guard result == SQLITE_OK else { throw sqliteError("Bind SQL value") }
+    }
+    return try body(statement)
+  }
+
+  private func execute(_ sql: String, _ values: [Value] = []) throws {
+    try withStatement(sql, values) { statement in
+      guard sqlite3_step(statement) == SQLITE_DONE else { throw sqliteError("Write SQL") }
+    }
+  }
+
+  private func query<T>(_ sql: String, _ values: [Value] = [], row: (OpaquePointer) throws -> T) throws -> [T] {
+    try withStatement(sql, values) { statement in
+      var rows: [T] = []
+      while true {
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW: rows.append(try row(statement))
+        case SQLITE_DONE: return rows
+        default: throw sqliteError("Read SQL")
+        }
+      }
+    }
+  }
+
+  private func transaction<T>(_ body: () throws -> T) throws -> T {
+    try executeSQL("BEGIN IMMEDIATE TRANSACTION")
+    do {
+      let result = try body()
+      try executeSQL("COMMIT")
+      return result
+    } catch {
+      // A failed COMMIT still owns a transaction; a RAISE(ROLLBACK) trigger may not.
+      if sqlite3_get_autocommit(db) == 0 {
+        do {
+          try executeSQL("ROLLBACK")
+        } catch let rollbackError {
+          throw DatabaseError("\(error.localizedDescription); rollback failed: \(rollbackError.localizedDescription)")
+        }
+      }
+      throw error
     }
   }
 

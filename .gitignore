@@ -12,5 +12,5 @@ zig-out/
 .DS_Store
 
 # Release artifacts
-releases/
+/releases/
 *.dmg

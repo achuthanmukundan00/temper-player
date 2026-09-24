@@ -8,6 +8,15 @@ enum Mode: String, CaseIterable {
     case analyze = "\u{03BB}"
 
     var label: String { rawValue }
+    var title: String {
+        switch self {
+        case .files: return "Files"
+        case .library: return "Artists & Albums"
+        case .playlists: return "Playlists"
+        case .tag: return "Metadata"
+        case .analyze: return "Analyze"
+        }
+    }
 }
 
 struct GlyphSpine: View {
@@ -18,7 +27,8 @@ struct GlyphSpine: View {
     var body: some View {
         VStack(spacing: 14 * uiScale) {
             ForEach(Mode.allCases, id: \.self) { mode in
-                Text(mode.label)
+                Button { activeMode = mode } label: {
+                    Text(mode.label)
                     .font(.system(size: 11 * uiScale, design: .monospaced))
                     .foregroundColor(foreground(for: mode))
                     .frame(width: 36 * uiScale, height: 24 * uiScale)
@@ -26,7 +36,11 @@ struct GlyphSpine: View {
                     .onHover { hovering in
                         hoveredMode = hovering ? mode : nil
                     }
-                    .onTapGesture { activeMode = mode }
+                }
+                .buttonStyle(.plain)
+                .help(mode.title)
+                .accessibilityLabel(mode.title)
+                .accessibilityAddTraits(mode == activeMode ? .isSelected : [])
             }
 
             Spacer()

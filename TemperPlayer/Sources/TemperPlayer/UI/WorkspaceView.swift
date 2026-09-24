@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WorkspaceView: View {
     @EnvironmentObject var library: Database
+    @EnvironmentObject var actions: LibraryActions
     @EnvironmentObject var playerState: PlayerState
     @Environment(\.uiScale) var uiScale
     @Binding var hoveredTrackId: String?
@@ -17,7 +18,7 @@ struct WorkspaceView: View {
         case .playlists: return "PLAYLISTS"
         case .tag: return "METADATA"
         case .analyze: return "ANALYZE"
-        default: return "~/Music"
+        default: return "FILES"
         }
     }
 
@@ -28,26 +29,32 @@ struct WorkspaceView: View {
                     .font(.system(size: 9 * uiScale, design: .monospaced))
                     .foregroundColor(Color(white: 0.4))
 
-                if activeMode == .files || activeMode == .playlists {
-                    TextField("filter...", text: $searchText)
+                if activeMode == .files || activeMode == .playlists || activeMode == .library {
+                    TextField("Search music…", text: $searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 9 * uiScale, design: .monospaced))
                         .foregroundColor(.white)
                         .focused($searchFocused)
-                        .frame(maxWidth: 120 * uiScale)
+                        .frame(maxWidth: 210 * uiScale)
+                        .accessibilityLabel("Search music")
                 }
 
                 Spacer()
-                if importService.isImporting {
-                    Text("importing \(importService.importedCount)/\(importService.foundCount)")
-                        .font(.system(size: 8 * uiScale, design: .monospaced))
-                        .foregroundColor(Color(red: 0.4, green: 0.8, blue: 0.4))
+                Button { importService.presentImportPanel() } label: {
+                    Label("Import", systemImage: "plus")
                 }
-                if activeMode == .files {
-                    Text("\(library.tracks.count) files")
-                        .font(.system(size: 9 * uiScale, design: .monospaced))
-                        .foregroundColor(Color(white: 0.25))
+                .help("Import audio files or folders (⌘O)")
+                .disabled(importService.isImporting)
+                Button { actions.presentQueue() } label: {
+                    Image(systemName: "list.bullet")
                 }
+                .help("Show full play queue")
+                .accessibilityLabel("Show Queue")
+                Button { actions.presentManager() } label: {
+                    Image(systemName: "folder.badge.gearshape")
+                }
+                .help("Manage library folders and missing files")
+                .accessibilityLabel("Manage Library")
             }
             .padding(.horizontal, 16 * uiScale)
             .padding(.vertical, 6 * uiScale)
@@ -58,10 +65,10 @@ struct WorkspaceView: View {
                 PlaylistListView(searchText: $searchText)
                     .frame(maxHeight: .infinity)
             case .library:
-                LibraryBrowserView()
+                LibraryBrowserView(searchText: searchText)
                     .frame(maxHeight: .infinity)
             case .tag:
-                TagEditorView()
+                MetadataEditorView()
                     .frame(maxHeight: .infinity)
             case .analyze:
                 visualizerContent
@@ -99,7 +106,7 @@ struct WorkspaceView: View {
     }
 
     private func focusSearch() {
-        if activeMode != .files && activeMode != .playlists {
+        if activeMode != .files && activeMode != .playlists && activeMode != .library {
             activeMode = .files
         }
         DispatchQueue.main.async { searchFocused = true }
@@ -159,96 +166,6 @@ struct WorkspaceView: View {
             .padding(.horizontal, 24 * uiScale)
 
             Spacer()
-        }
-    }
-}
-
-private struct TagEditorView: View {
-    @EnvironmentObject var playerState: PlayerState
-    @EnvironmentObject var library: Database
-    @Environment(\.uiScale) var uiScale
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10 * uiScale) {
-                if let track = playerState.selectedTrackIds.count > 1 ? nil : (playerState.selectedTrackId.flatMap { id in library.tracks.first { $0.id == id } } ?? playerState.currentTrack) {
-                    TagField(label: "title", value: track.title ?? "") { newValue in
-                        library.updateTrackMetadata(id: track.id, title: newValue.isEmpty ? nil : newValue, artist: nil, album: nil)
-                    }
-                    TagField(label: "artist", value: track.artist ?? "") { newValue in
-                        library.updateTrackMetadata(id: track.id, title: nil, artist: newValue.isEmpty ? nil : newValue, album: nil)
-                    }
-                    TagField(label: "album", value: track.album ?? "") { newValue in
-                        library.updateTrackMetadata(id: track.id, title: nil, artist: nil, album: newValue.isEmpty ? nil : newValue)
-                    }
-                    if let aa = track.albumArtist { TagField(label: "album artist", value: aa) { _ in } }
-                    if let tn = track.trackNo, tn > 0 { TagField(label: "track", value: "\(tn)") { _ in } }
-                    if let dn = track.discNo, dn > 0 { TagField(label: "disc", value: "\(dn)") { _ in } }
-                    if let y = track.year, y > 0 { TagField(label: "year", value: "\(y)") { _ in } }
-                    if let g = track.genre { TagField(label: "genre", value: g) { _ in } }
-                    TagField(label: "format", value: track.format.uppercased()) { _ in }
-                    TagField(label: "sample rate", value: track.sampleRate >= 1000 ? "\(track.sampleRate / 1000).\(track.sampleRate % 1000 / 100)k" : "\(track.sampleRate)") { _ in }
-                    TagField(label: "duration", value: durationString(track.duration)) { _ in }
-                } else {
-                    VStack(spacing: 8 * uiScale) {
-                        Text("\u{25CE}")
-                            .font(.system(size: 24 * uiScale))
-                            .foregroundColor(Color(white: 0.2))
-                        Text("select a track to edit metadata")
-                            .font(.system(size: 10 * uiScale, design: .monospaced))
-                            .foregroundColor(Color(white: 0.3))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 40 * uiScale)
-                }
-            }
-            .padding(16 * uiScale)
-        }
-        .background(Color.black)
-    }
-
-    private func durationString(_ d: Double) -> String {
-        guard d.isFinite, d > 0 else { return "--:--" }
-        let m = Int(d) / 60
-        let s = Int(d) % 60
-        return String(format: "%d:%02d", m, s)
-    }
-}
-
-private struct TagField: View {
-    let label: String
-    let value: String
-    let onCommit: (String) -> Void
-    @State private var editing = false
-    @State private var editValue = ""
-    @Environment(\.uiScale) var uiScale
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2 * uiScale) {
-            Text(label)
-                .font(.system(size: 8 * uiScale, design: .monospaced))
-                .foregroundColor(Color(white: 0.3))
-            if editing {
-                TextField("", text: $editValue)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11 * uiScale, design: .monospaced))
-                    .foregroundColor(.white)
-                    .onSubmit {
-                        onCommit(editValue)
-                        editing = false
-                    }
-                    .onExitCommand { editing = false }
-            } else {
-                Text(value)
-                    .font(.system(size: 11 * uiScale, design: .monospaced))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .onTapGesture {
-                        editValue = value
-                        editing = true
-                    }
-            }
-            Rectangle().fill(Color(white: 0.08)).frame(height: 1)
         }
     }
 }

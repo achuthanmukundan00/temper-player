@@ -89,6 +89,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     // MARK: - NSPopoverDelegate
 
     func popoverDidClose(_ notification: Notification) {
+        cleanupEventMonitor()
+    }
+
+    private func cleanupEventMonitor() {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil

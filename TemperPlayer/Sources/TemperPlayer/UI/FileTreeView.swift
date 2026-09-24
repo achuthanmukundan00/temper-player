@@ -4,102 +4,118 @@ struct FileTreeView: View {
     @EnvironmentObject var library: Database
     @EnvironmentObject var playerState: PlayerState
     @EnvironmentObject var playback: PlaybackController
+    @EnvironmentObject var actions: LibraryActions
     @Environment(\.uiScale) var uiScale
     @Binding var hoveredTrackId: String?
     let searchText: String
+    @AppStorage("librarySort") private var sortName = LibrarySort.dateAdded.rawValue
+    @AppStorage("librarySortAscending") private var ascending = true
+    @State private var selectionAnchor: String?
 
     private var filteredTracks: [Track] {
-        guard !searchText.isEmpty else { return library.tracks }
-        let q = searchText.lowercased()
-        return library.tracks.filter {
-            ($0.title?.lowercased().contains(q) ?? false) ||
-            ($0.artist?.lowercased().contains(q) ?? false) ||
-            ($0.album?.lowercased().contains(q) ?? false) ||
-            $0.path.lowercased().contains(q)
-        }
+        LibraryQuery.sorted(LibraryQuery.filter(library.tracks, search: searchText),
+                            by: LibrarySort(rawValue: sortName) ?? .dateAdded, ascending: ascending)
+    }
+
+    private var selectedTracks: [Track] {
+        filteredTracks.filter { playerState.selectedTrackIds.contains($0.id) }
     }
 
     var body: some View {
         GeometryReader { geo in
             let layout = FileTableLayout(width: geo.size.width, uiScale: uiScale)
-
             VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Menu {
+                        Picker("Sort by", selection: $sortName) {
+                            ForEach(LibrarySort.allCases) { sort in Text(sort.rawValue).tag(sort.rawValue) }
+                        }
+                        Toggle("Reverse Order", isOn: Binding(get: { !ascending }, set: { ascending = !$0 }))
+                    } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    Text("\(filteredTracks.count) tracks").foregroundStyle(.secondary)
+                    Spacer()
+                    if !selectedTracks.isEmpty {
+                        Text("\(selectedTracks.count) selected").foregroundStyle(.secondary)
+                        Menu("Actions") {
+                            TrackActionsMenu(tracks: selectedTracks, context: filteredTracks, title: "Library")
+                        }
+                        .menuStyle(.borderlessButton).fixedSize()
+                        Button { actions.requestRemoval(selectedTracks) } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove selected tracks from the library (keeps audio files)")
+                        .accessibilityLabel("Remove selected tracks from library")
+                    }
+                }
+                .font(.system(size: 10 * uiScale))
+                .padding(.horizontal, 12 * uiScale)
+                .padding(.vertical, 7 * uiScale)
                 FileTableHeader(layout: layout)
 
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(filteredTracks.enumerated()), id: \.element.id) { idx, track in
-                            FileTreeRow(
-                                track: track,
-                                index: idx,
-                                isPlaying: playerState.currentTrack?.id == track.id,
-                                isQueued: playerState.upcomingQueue.contains(where: { $0.id == track.id }),
-                                isSelected: playerState.selectedTrackIds.contains(track.id),
-                                isHovered: hoveredTrackId == track.id,
-                                layout: layout
-                            )
-                            .onHover { hovering in
-                                hoveredTrackId = hovering ? track.id : nil
-                                if hovering { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
-                            }
-                            .onTapGesture(count: 2) {
-                                playTrack(track)
-                            }
-                            .onTapGesture {
-                                let isCmd = NSEvent.modifierFlags.contains(.command)
-                                if isCmd {
-                                    var ids = playerState.selectedTrackIds
-                                    if ids.contains(track.id) {
-                                        ids.remove(track.id)
-                                    } else {
-                                        ids.insert(track.id)
+                if filteredTracks.isEmpty {
+                    LibraryEmptyState(isSearching: !library.tracks.isEmpty)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(Array(filteredTracks.enumerated()), id: \.element.id) { idx, track in
+                                    FileTreeRow(
+                                        track: track, index: idx,
+                                        isPlaying: playerState.currentTrack?.id == track.id,
+                                        isQueued: playerState.upcomingQueue.contains(where: { $0.id == track.id }),
+                                        isSelected: playerState.selectedTrackIds.contains(track.id),
+                                        isHovered: hoveredTrackId == track.id, layout: layout
+                                    )
+                                    .id(track.id)
+                                    .onHover { hoveredTrackId = $0 ? track.id : nil }
+                                    .onTapGesture(count: 2) { playTrack(track) }
+                                    .onTapGesture { select(track) }
+                                    .contextMenu {
+                                        TrackActionsMenu(
+                                            tracks: playerState.selectedTrackIds.contains(track.id) ? selectedTracks : [track],
+                                            context: filteredTracks, title: searchText.isEmpty ? "Library" : "Search"
+                                        )
                                     }
-                                    playerState.selectedTrackIds = ids
-                                } else {
-                                    playerState.selectedTrackIds = [track.id]
-                                    playerState.selectedTrackId = track.id
+                                    .accessibilityElement(children: .combine)
+                                    .accessibilityAddTraits(playerState.selectedTrackIds.contains(track.id) ? .isSelected : [])
+                                    .accessibilityAction(named: "Play") { playTrack(track) }
+                                    .accessibilityAction(named: "Remove from Library") { actions.requestRemoval([track]) }
                                 }
                             }
-                            .contextMenu {
-                                Button("Play") { playTrack(track) }
-                                Button("Play Next") { playback.enqueueNext(track) }
-                                Button("Add to Queue") { playback.enqueue(track) }
-                                Divider()
-                                Menu("Add to Playlist") {
-                                    if library.playlists.isEmpty {
-                                        Text("No playlists")
-                                    } else {
-                                        ForEach(library.playlists) { pl in
-                                            Button(pl.name) {
-                                                library.addTrackToPlaylist(trackId: track.id, playlistId: pl.id)
-                                            }
-                                        }
-                                    }
-                                }
-                                Divider()
-                                Button("Show in Finder") {
-                                    NSWorkspace.shared.selectFile(track.path, inFileViewerRootedAtPath: "")
-                                }
-                            }
+                            .padding(.vertical, 3 * uiScale)
+                        }
+                        .onChange(of: playerState.selectedTrackId) { _, id in
+                            if let id { proxy.scrollTo(id) }
                         }
                     }
-                    .padding(.vertical, 3 * uiScale)
                 }
             }
         }
         .font(.system(size: 11 * uiScale, design: .monospaced))
         .onAppear { playerState.setVisibleTracks(filteredTracks) }
-        .onChange(of: filteredTracks.map(\.id)) { _, _ in
+        .onChange(of: filteredTracks.map(\.id)) { _, ids in
             playerState.setVisibleTracks(filteredTracks)
+            playerState.selectedTrackIds.formIntersection(ids)
+            if let selectionAnchor, !ids.contains(selectionAnchor) { self.selectionAnchor = nil }
         }
+        .onDeleteCommand { actions.requestRemoval(selectedTracks) }
+    }
+
+    private func select(_ track: Track) {
+        let modifiers = NSEvent.modifierFlags
+        let ids = LibraryQuery.selection(clicked: track.id, visibleIDs: filteredTracks.map(\.id),
+                                         selected: playerState.selectedTrackIds, anchor: selectionAnchor,
+                                         command: modifiers.contains(.command), shift: modifiers.contains(.shift))
+        playerState.selectedTrackId = ids.contains(track.id) ? track.id : filteredTracks.first { ids.contains($0.id) }?.id
+        playerState.selectedTrackIds = ids
+        if !modifiers.contains(.shift) { selectionAnchor = track.id }
     }
 
     private func playTrack(_ track: Track) {
-        playback.play(
-            track: track,
-            context: filteredTracks,
-            title: searchText.isEmpty ? "Library" : "Search"
-        )
+        playback.play(track: track, context: filteredTracks, title: searchText.isEmpty ? "Library" : "Search")
     }
 }
 

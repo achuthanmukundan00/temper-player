@@ -1,0 +1,32 @@
+name: macOS validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build native audio core
+        working-directory: zig-core
+        run: zig build -Dtarget=native --release=fast
+      - name: Run isolated library, import, and queue tests
+        working-directory: TemperPlayer
+        run: swift test
+      - name: Validate release packaging
+        run: |
+          bash -n scripts/package-macos.sh
+          ./scripts/package-macos.sh "$RUNNER_TEMP/temperplayer-package"

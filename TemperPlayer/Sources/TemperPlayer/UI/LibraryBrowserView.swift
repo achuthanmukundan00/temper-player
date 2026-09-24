@@ -5,135 +5,114 @@ struct LibraryBrowserView: View {
     @EnvironmentObject var playerState: PlayerState
     @EnvironmentObject var playback: PlaybackController
     @Environment(\.uiScale) var uiScale
-    @State private var selectedArtist: String?
-    @State private var selectedAlbum: String?
+    var searchText = ""
+    @State private var expandedArtists: Set<String> = []
+    @State private var expandedAlbums: Set<String> = []
 
-    private var artists: [(name: String, albums: [(name: String, tracks: [Track])])] {
-        let grouped = Dictionary(grouping: library.tracks) { $0.artist ?? "Unknown Artist" }
-        return grouped.keys.sorted().map { artist in
-            let albumGroup = Dictionary(grouping: grouped[artist]!) { $0.album ?? "Unknown Album" }
-            let albums = albumGroup.keys.sorted().map { album in
-                (name: album, tracks: albumGroup[album]!.sorted { ($0.trackNo ?? 999) < ($1.trackNo ?? 999) })
-            }
-            return (name: artist, albums: albums)
+    private struct AlbumGroup: Identifiable {
+        let id: String
+        let name: String
+        let tracks: [Track]
+    }
+    private struct ArtistGroup: Identifiable {
+        let id: String
+        let albums: [AlbumGroup]
+        var tracks: [Track] { albums.flatMap(\.tracks) }
+    }
+
+    private var artists: [ArtistGroup] {
+        let filtered = LibraryQuery.filter(library.tracks, search: searchText)
+        let grouped = Dictionary(grouping: filtered) { $0.albumArtist ?? $0.artist ?? "Unknown Artist" }
+        return grouped.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map { artist in
+            let albums = Dictionary(grouping: grouped[artist] ?? []) { $0.album ?? "Unknown Album" }
+            return ArtistGroup(id: artist, albums: albums.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map { album in
+                AlbumGroup(id: "\(artist.count):\(artist)\(album)", name: album,
+                           tracks: LibraryQuery.sorted(albums[album] ?? [], by: .album))
+            })
+        }
+    }
+
+    private var searching: Bool { !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var visibleTracks: [Track] {
+        artists.filter { searching || expandedArtists.contains($0.id) }.flatMap { artist in
+            artist.albums.filter { searching || expandedAlbums.contains($0.id) }.flatMap(\.tracks)
         }
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(artists, id: \.name) { artist in
-                    let isExpanded = selectedArtist == artist.name
-                    HStack(spacing: 6 * uiScale) {
-                        Text(isExpanded ? "\u{25BC}" : "\u{25B6}")
-                            .font(.system(size: 8 * uiScale, design: .monospaced))
-                            .foregroundColor(Color(white: 0.3))
-                            .frame(width: 10 * uiScale)
-
-                        Text(artist.name)
-                            .foregroundColor(.white)
-
-                        Spacer()
-
-                        Text("\(artist.albums.reduce(0) { $0 + $1.tracks.count })")
-                            .font(.system(size: 9 * uiScale, design: .monospaced))
-                            .foregroundColor(Color(white: 0.3))
-                    }
-                    .padding(.vertical, 3 * uiScale)
-                    .padding(.horizontal, 8 * uiScale)
-                    .background(isExpanded ? Color.white.opacity(0.03) : Color.clear)
-                    .onTapGesture {
-                        withAnimation(.none) {
-                            selectedArtist = isExpanded ? nil : artist.name
-                            selectedAlbum = nil
-                        }
-                    }
-
-                    if isExpanded {
-                        ForEach(artist.albums, id: \.name) { album in
-                            let albumExpanded = selectedAlbum == album.name
-                            HStack(spacing: 6 * uiScale) {
-                                Text("\u{2502}  ")
-                                    .foregroundColor(Color(white: 0.15))
-                                    .frame(width: 14 * uiScale)
-
-                                Text(albumExpanded ? "\u{25BC}" : "\u{25B6}")
-                                    .font(.system(size: 7 * uiScale, design: .monospaced))
-                                    .foregroundColor(Color(white: 0.25))
-                                    .frame(width: 8 * uiScale)
-
-                                Text(album.name)
-                                    .foregroundColor(Color(white: 0.6))
-
-                                Spacer()
-
-                                Text("\(album.tracks.count)")
-                                    .font(.system(size: 8 * uiScale, design: .monospaced))
-                                    .foregroundColor(Color(white: 0.2))
-                            }
-                            .padding(.vertical, 2 * uiScale)
-                            .padding(.leading, 16 * uiScale)
-                            .padding(.trailing, 8 * uiScale)
-                            .background(albumExpanded ? Color.white.opacity(0.02) : Color.clear)
-                            .onTapGesture {
-                                withAnimation(.none) {
-                                    selectedAlbum = albumExpanded ? nil : album.name
+        Group {
+            if artists.isEmpty {
+                LibraryEmptyState(isSearching: !library.tracks.isEmpty)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8 * uiScale) {
+                        ForEach(artists) { artist in
+                            DisclosureGroup(isExpanded: expansion(artist.id, in: $expandedArtists)) {
+                                ForEach(artist.albums) { album in
+                                    DisclosureGroup(isExpanded: expansion(album.id, in: $expandedAlbums)) {
+                                        ForEach(album.tracks) { track in albumRow(track, album: album) }
+                                    } label: {
+                                        HStack {
+                                            Text(album.name).lineLimit(1)
+                                            Spacer()
+                                            Text("\(album.tracks.count)").foregroundStyle(.secondary)
+                                            Menu {
+                                                TrackActionsMenu(tracks: album.tracks, context: album.tracks, title: album.name)
+                                            } label: { Image(systemName: "ellipsis") }
+                                            .menuStyle(.borderlessButton).fixedSize()
+                                            .accessibilityLabel("Actions for \(album.name)")
+                                        }
+                                    }
+                                    .padding(.vertical, 4)
+                                }
+                            } label: {
+                                HStack {
+                                    Text(artist.id).fontWeight(.semibold)
+                                    Spacer()
+                                    Text("\(artist.tracks.count)").foregroundStyle(.secondary)
+                                    Menu {
+                                        TrackActionsMenu(tracks: artist.tracks, context: artist.tracks, title: artist.id)
+                                    } label: { Image(systemName: "ellipsis") }
+                                    .menuStyle(.borderlessButton).fixedSize()
+                                    .accessibilityLabel("Actions for \(artist.id)")
                                 }
                             }
-
-                            if albumExpanded {
-                                ForEach(album.tracks) { track in
-                                    HStack(spacing: 6 * uiScale) {
-                                        Text("\u{2502}     \u{251C}\u{2500}")
-                                            .foregroundColor(Color(white: 0.15))
-                                            .frame(width: 28 * uiScale, alignment: .leading)
-
-                                        if let tn = track.trackNo {
-                                            Text("\(tn).")
-                                                .font(.system(size: 9 * uiScale, design: .monospaced))
-                                                .foregroundColor(Color(white: 0.3))
-                                                .frame(width: 24 * uiScale, alignment: .trailing)
-                                        }
-
-                                        Text(track.title ?? track.path.components(separatedBy: "/").last ?? "?")
-                                            .foregroundColor(playerState.currentTrack?.id == track.id ? .white : Color(white: 0.7))
-                                            .lineLimit(1)
-
-                                        Spacer()
-
-                                        let m = Int(track.duration) / 60
-                                        let s = Int(track.duration) % 60
-                                        Text(String(format: "%d:%02d", m, s))
-                                            .font(.system(size: 9 * uiScale, design: .monospaced))
-                                            .foregroundColor(Color(white: 0.35))
-                                    }
-                                    .padding(.vertical, 2 * uiScale)
-                                    .padding(.leading, 32 * uiScale)
-                                    .padding(.trailing, 8 * uiScale)
-                                    .onTapGesture(count: 2) {
-                                        playback.play(track: track, context: album.tracks, title: album.name)
-                                    }
-                                    .contextMenu {
-                                        Button("Play") {
-                                            playback.play(track: track, context: album.tracks, title: album.name)
-                                        }
-                                        Button("Play Next") { playback.enqueueNext(track) }
-                                        Button("Add to Queue") { playback.enqueue(track) }
-                                        Divider()
-                                        Button("Show in Finder") {
-                                            NSWorkspace.shared.selectFile(track.path, inFileViewerRootedAtPath: "")
-                                        }
-                                    }
-                                }
-                            }
+                            Divider()
                         }
                     }
-
-                    Color(white: 0.04).frame(height: 1)
+                    .padding(12 * uiScale)
                 }
             }
-            .padding(4 * uiScale)
         }
-        .font(.system(size: 10 * uiScale, design: .monospaced))
+        .font(.system(size: 11 * uiScale, design: .monospaced))
+        .onAppear { playerState.setVisibleTracks(visibleTracks) }
+        .onChange(of: visibleTracks.map(\.id)) { _, _ in playerState.setVisibleTracks(visibleTracks) }
+    }
+
+    private func expansion(_ id: String, in set: Binding<Set<String>>) -> Binding<Bool> {
+        Binding(get: { searching || set.wrappedValue.contains(id) }, set: { expanded in
+            if expanded { set.wrappedValue.insert(id) } else { set.wrappedValue.remove(id) }
+        })
+    }
+
+    private func albumRow(_ track: Track, album: AlbumGroup) -> some View {
+        HStack(spacing: 10) {
+            Text(track.trackNo.map(String.init) ?? "–").foregroundStyle(.secondary).frame(width: 28)
+            Text(track.displayTitle).lineLimit(1)
+            Spacer()
+            Text(track.formattedDuration).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 8)
+        .background(playerState.selectedTrackIds.contains(track.id) ? Color.white.opacity(0.10) : .clear)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { playback.play(track: track, context: album.tracks, title: album.name) }
+        .onTapGesture {
+            playerState.selectedTrackId = track.id
+            playerState.selectedTrackIds = [track.id]
+        }
+        .contextMenu { TrackActionsMenu(tracks: [track], context: album.tracks, title: album.name) }
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: "Play") { playback.play(track: track, context: album.tracks, title: album.name) }
     }
 }

@@ -304,6 +304,7 @@ final class RealtimeAnalyzer: ObservableObject {
     private let latencyProbesEnabled = ProcessInfo.processInfo.environment["ANALYZER_LATENCY_PROBES"] == "1"
     private let lowLatencySpectrumEnabled = ProcessInfo.processInfo.environment["TEMPER_LOW_LATENCY_SPECTRUM"] != "0"
     private var displayLink: CVDisplayLink?
+    private var retainedSelf: Unmanaged<RealtimeAnalyzer>?
     private var lastDisplayTickTimeNs: UInt64 = 0
     private var visualFrameDebt = 0.0
 
@@ -312,8 +313,12 @@ final class RealtimeAnalyzer: ObservableObject {
         self.tapNode = tapNode
         self.log2n = vDSP_Length(log2(Float(fftSize)))
         self.fastLog2n = vDSP_Length(log2(Float(fastFFTSize)))
-        self.fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
-        self.fastFFTSetup = vDSP_create_fftsetup(fastLog2n, FFTRadix(kFFTRadix2))!
+        guard let fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)),
+              let fastFFTSetup = vDSP_create_fftsetup(fastLog2n, FFTRadix(kFFTRadix2)) else {
+            fatalError("RealtimeAnalyzer: cannot create FFT setup")
+        }
+        self.fftSetup = fftSetup
+        self.fastFFTSetup = fastFFTSetup
         self.window = [Float](repeating: 0, count: fftSize)
         self.fastWindow = [Float](repeating: 0, count: fastFFTSize)
         self.fftInputBuffer = [Float](repeating: 0, count: fftSize)
@@ -735,7 +740,8 @@ final class RealtimeAnalyzer: ObservableObject {
             return
         }
 
-        let context = Unmanaged.passUnretained(self).toOpaque()
+        let retained = Unmanaged.passRetained(self)
+        let context = retained.toOpaque()
         CVDisplayLinkSetOutputCallback(newDisplayLink, { _, _, _, _, _, context in
             guard let context else { return kCVReturnSuccess }
             let analyzer = Unmanaged<RealtimeAnalyzer>.fromOpaque(context).takeUnretainedValue()
@@ -745,6 +751,9 @@ final class RealtimeAnalyzer: ObservableObject {
 
         if CVDisplayLinkStart(newDisplayLink) == kCVReturnSuccess {
             displayLink = newDisplayLink
+            retainedSelf = retained
+        } else {
+            retained.release()
         }
     }
 
@@ -752,6 +761,8 @@ final class RealtimeAnalyzer: ObservableObject {
         guard let displayLink else { return }
         CVDisplayLinkStop(displayLink)
         self.displayLink = nil
+        retainedSelf?.release()
+        retainedSelf = nil
         displayTickScheduled.withLock { $0 = false }
         displayDrawDebt.withLock { $0 = 0 }
         lastDisplayTickTimeNs = 0

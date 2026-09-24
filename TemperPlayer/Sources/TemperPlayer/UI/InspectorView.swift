@@ -259,8 +259,15 @@ struct InspectorView: View {
 
     private func handleArtworkDrop(providers: [NSItemProvider], trackId: String) -> Bool {
         guard let provider = providers.first else { return false }
-        _ = provider.loadObject(ofClass: NSURL.self) { item, _ in
-            guard let url = item as? URL else { return }
+        provider.loadObject(ofClass: NSURL.self) { item, error in
+            if let error {
+                print("[InspectorView] artwork drop failed: \(error.localizedDescription)")
+                return
+            }
+            guard let url = item as? URL else {
+                print("[InspectorView] artwork drop: could not load URL")
+                return
+            }
             DispatchQueue.main.async {
                 ImportService.shared.updateArtwork(trackId: trackId, from: url)
             }
