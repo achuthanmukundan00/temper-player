@@ -191,6 +191,7 @@ struct MenuBarView: View {
         }
     }
 
+    @MainActor
     private var playPauseButton: some View {
         Button(action: { playback.togglePlayPause() }) {
             Image(systemName: playerState.isPlaying ? "pause.fill" : "play.fill")
