@@ -50,6 +50,7 @@ export fn decode_close(h: *anyopaque) void {
     const allocator = gpa_instance.allocator();
     const decoder: *Decoder = @ptrCast(@alignCast(h));
     decoder.close();
+    decoder.* = undefined;
     allocator.destroy(decoder);
 }
 
@@ -76,6 +77,7 @@ export fn pitch_create(sample_rate: f32, channels: i32) ?*anyopaque {
 export fn pitch_destroy(h: *anyopaque) void {
     const allocator = gpa_instance.allocator();
     const shifter: *pitch_mod.PitchShifter = @ptrCast(@alignCast(h));
+    shifter.* = undefined;
     allocator.destroy(shifter);
 }
 

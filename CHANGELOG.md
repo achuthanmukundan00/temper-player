@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.0 — Library usability and reliability
+
+- Import multiple files/folders or drops through one cancellable pipeline, with duplicate-path detection, playback validation, and explicit results.
+- Add confirmed bulk library removal, folder rescans, and missing-file cleanup without deleting source audio.
+- Add searchable artist/album actions, persistent sorting, range/multiple selection, empty-state onboarding, and library-only batch metadata editing.
+- Complete playlist rename/clear/delete safeguards, bulk membership actions, and responsive controls.
+- Add the full queue editor and fix shuffled edits, duplicate occurrences, current-track removal, end-of-queue replay, and failed-file loops.
+- Make SQLite mutations transactional and checked; preserve history on reimport, handle 64-bit file sizes, and surface failures without publishing unsaved state.
+- Make artwork/index writes atomic and preserve legacy artwork if migration cannot be saved.
+- Reject surround audio instead of passing unwritten channels through the stereo pitch pipeline; mono and stereo remain supported.
+- Add isolated regression tests, macOS CI, runtime dylib resolution for source builds/tests, a user guide, and release gates.
+- Package a self-contained Apple-silicon DMG with version metadata, third-party notices, and SHA-256 checksums. This release is ad-hoc signed, not Developer ID signed or notarized.
+
+See [v0.2.0 release notes](docs/releases/v0.2.0.md) for installation, validation, and known limitations.
+
 ## v0.1.0 — Peak-Locked Phase Vocoder Pitch Engine
 
 ### 🎛️ Pitch shifting — rebuilt from scratch

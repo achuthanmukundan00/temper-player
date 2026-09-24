@@ -372,7 +372,6 @@ struct MBGoniometerView: View {
             GeometryReader { geo in
                 let center = CGPoint(x: geo.size.width / 2, y: geo.size.height / 2)
                 let radius = min(geo.size.width, geo.size.height) / 2 - 4
-                let points = analyzer.goniometerPoints
 
                 Canvas { context, size in
                     context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))

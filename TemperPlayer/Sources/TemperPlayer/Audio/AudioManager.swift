@@ -1,6 +1,7 @@
 import Foundation
 import AVFAudio
 import CTemperPlayer
+import os
 
 class AudioManager: ObservableObject {
     private let engine = AVAudioEngine()
@@ -28,10 +29,17 @@ class AudioManager: ObservableObject {
     private var timeTimer: Timer?
     private var seekOffset: Double = 0
     private var playbackStartTime: Date?
-    private var playbackGeneration = 0
-    private var finishNotified = false
+    // Thread-safe: written on main thread, read on pumpQueue via lock.
+    private let genLock = OSAllocatedUnfairLock<Int>(initialState: 0)
+    private let finishNotifiedLock = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private static let logger = Logger(subsystem: "com.temperplayer", category: "audio")
 
-    var onTrackFinished: (() -> Void)?
+    enum TrackEndReason: Equatable {
+        case completed
+        case failed
+    }
+
+    var onTrackFinished: ((TrackEndReason) -> Void)?
 
     init() {
         analyzer = RealtimeAnalyzer(engine: engine)
@@ -40,12 +48,23 @@ class AudioManager: ObservableObject {
         try? engine.start()
     }
 
-    private func startTimeTimer() {
+    private func startTimeTimer(generation: Int) {
         timeTimer?.invalidate()
         playbackStartTime = Date()
         timeTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self, let start = self.playbackStartTime else { return }
-            self.currentTime = self.seekOffset + Date().timeIntervalSince(start)
+            guard self.genLock.withLock({ $0 }) == generation else { return }
+
+            let elapsed = self.seekOffset + Date().timeIntervalSince(start)
+            let trackDuration = self.duration
+            self.currentTime = trackDuration > 0 ? min(elapsed, trackDuration) : elapsed
+
+            // AVAudioPlayerNode completion handlers can be lost after an output-device
+            // reset. Keep the UI bounded and advance the queue if rendering has
+            // outlived the file by more than one timer interval.
+            if trackDuration > 0, elapsed >= trackDuration + 0.25 {
+                self.finishTrack(generation: generation, reason: .completed)
+            }
         }
     }
 
@@ -55,47 +74,66 @@ class AudioManager: ObservableObject {
         playbackStartTime = nil
     }
 
-    func play(track path: String) {
+    @discardableResult
+    func play(track path: String) -> Bool {
         stop()
 
         let ext = path.lowercased().components(separatedBy: ".").last ?? ""
         currentTrackPath = path
-        playbackGeneration += 1
-        finishNotified = false
+        let generation = genLock.withLock { g -> Int in
+            let next = g + 1
+            g = next
+            return next
+        }
+        finishNotifiedLock.withLock { $0 = false }
         analyzer.reset()
         analyzer.isFrozen = false
         setPitchShift(0)
-        let generation = playbackGeneration
 
+        let started: Bool
         if decoderFormats.contains(ext) {
-            playViaDecoder(path: path, generation: generation)
+            started = playViaDecoder(path: path, generation: generation)
         } else {
-            playViaAVFoundation(path: path, generation: generation)
+            started = playViaAVFoundation(path: path, generation: generation)
+        }
+
+        guard started else {
+            Self.logger.error("Unable to start playback for \(path, privacy: .private)")
+            cleanupFailedStart(generation: generation)
+            return false
         }
 
         seekOffset = 0
         currentTime = 0
-        startTimeTimer()
+        startTimeTimer(generation: generation)
         analyzer.installTap()
+        return true
     }
 
     private func reconnectAudioGraph() {
         engine.connect(playerNode, to: engine.mainMixerNode, format: nil)
     }
 
+    private func cleanupFailedStart(generation: Int) {
+        guard genLock.withLock({ $0 }) == generation else { return }
+        stop()
+    }
+
     func stop() {
-        playbackGeneration += 1
-        finishNotified = true
+        genLock.withLock { $0 += 1 }
+        finishNotifiedLock.withLock { $0 = true }
+        stopTimeTimer()
+        pumpQueue.sync {
+            pitchShifter?.destroy()
+            pitchShifter = nil
+        }
         analyzer.removeTap()
         analyzer.reset()
         playerNode.stop()
         engine.reset()
         reconnectAudioGraph()
-        stopTimeTimer()
         decoder?.close()
         decoder = nil
-        pitchShifter?.destroy()
-        pitchShifter = nil
         avAudioFile = nil
         currentTrackPath = nil
         currentFrame = 0
@@ -105,11 +143,11 @@ class AudioManager: ObservableObject {
         seekOffset = 0
     }
 
-    private func playViaDecoder(path: String, generation: Int) {
+    private func playViaDecoder(path: String, generation: Int) -> Bool {
         let d = DecoderBridge()
         guard d.open(path: path) else {
             currentTrackPath = nil
-            return
+            return false
         }
 
         decoder = d
@@ -126,39 +164,48 @@ class AudioManager: ObservableObject {
         guard let format else {
             decoder = nil
             currentTrackPath = nil
-            return
+            return false
         }
 
         scheduleBuffer(format: format, generation: generation)
         playerNode.play()
         isPlaying = true
+        return true
     }
 
-    private func playViaAVFoundation(path: String, generation: Int) {
+    private func playViaAVFoundation(path: String, generation: Int) -> Bool {
         let url = URL(fileURLWithPath: path)
         guard let file = try? AVAudioFile(forReading: url) else {
             currentTrackPath = nil
-            return
+            return false
         }
 
+        // The pitch pump writes only left/right buffers. Reject surround files
+        // rather than scheduling uninitialized extra channels from older libraries.
+        guard (1...2).contains(file.processingFormat.channelCount), file.length > 0,
+              file.processingFormat.sampleRate.isFinite, file.processingFormat.sampleRate > 0 else {
+            return false
+        }
         avAudioFile = file
         isAVFoundationTrack = true
 
         do {
             try engine.start()
         } catch {
-            return
+            Self.logger.error("Audio engine start failed: \(error.localizedDescription)")
+            return false
         }
 
-        startPitchedPump(file: file, generation: generation)
+        guard startPitchedPump(file: file, generation: generation) else { return false }
         playerNode.play()
         isPlaying = true
+        return true
     }
 
     /// Stream an AVAudioFile through the Zig phase-vocoder pitch shifter.
     /// The chain is mathematically transparent at 0 cents, so it always runs —
     /// no graph swapping when the knob crosses zero.
-    private func startPitchedPump(file: AVAudioFile, generation: Int) {
+    private func startPitchedPump(file: AVAudioFile, generation: Int) -> Bool {
         let format = file.processingFormat
 
         // Connect with the file's real format so AVAudioEngine inserts the
@@ -167,12 +214,14 @@ class AudioManager: ObservableObject {
         engine.disconnectNodeOutput(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: format)
 
-        pitchShifter?.destroy()
-        let shifter = PitchShifterBridge(
+        guard let shifter = PitchShifterBridge(
             sampleRate: format.sampleRate,
             channels: Int(format.channelCount)
-        )
-        shifter?.setCents(pitchShift)
+        ) else {
+            Self.logger.error("Unable to create pitch shifter")
+            return false
+        }
+        shifter.setCents(pitchShift)
         pitchShifter = shifter
 
         for _ in 0..<pumpBuffersInFlight {
@@ -180,18 +229,22 @@ class AudioManager: ObservableObject {
                 self?.pumpChunk(file: file, format: format, generation: generation)
             }
         }
+        return true
     }
 
     /// Runs on pumpQueue. Reads one chunk, pitch-shifts it, schedules it.
     /// Each buffer's completion handler pumps the next chunk, keeping
     /// `pumpBuffersInFlight` chunks queued ahead of the render head.
     private func pumpChunk(file: AVAudioFile, format: AVAudioFormat, generation: Int) {
-        guard generation == playbackGeneration, let shifter = pitchShifter else { return }
+        let currentGen = genLock.withLock { $0 }
+        guard generation == currentGen, let shifter = pitchShifter else { return }
 
         guard let inBuf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: pumpChunkFrames) else { return }
         do {
             try file.read(into: inBuf, frameCount: pumpChunkFrames)
         } catch {
+            Self.logger.warning("pumpChunk read error: \(error.localizedDescription)")
+            finishTrack(generation: generation, reason: .failed)
             return
         }
 
@@ -230,15 +283,17 @@ class AudioManager: ObservableObject {
         }
 
         guard produced > 0 else {
-            if isFinal { finishTrack(generation: generation) }
+            if isFinal { finishTrack(generation: generation, reason: .completed) }
             return
         }
         outBuf.frameLength = AVAudioFrameCount(produced)
 
         playerNode.scheduleBuffer(outBuf) { [weak self] in
-            guard let self, generation == self.playbackGeneration else { return }
+            guard let self else { return }
+            let curGen = self.genLock.withLock { $0 }
+            guard generation == curGen else { return }
             if isFinal {
-                self.finishTrack(generation: generation)
+                self.finishTrack(generation: generation, reason: .completed)
             } else {
                 self.pumpQueue.async {
                     self.pumpChunk(file: file, format: format, generation: generation)
@@ -248,7 +303,7 @@ class AudioManager: ObservableObject {
     }
 
     private func scheduleBuffer(format: AVAudioFormat, generation: Int) {
-        guard playbackGeneration == generation else { return }
+        guard genLock.withLock({ $0 }) == generation else { return }
         guard let decoder else { return }
 
         let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameBatch))!
@@ -274,12 +329,12 @@ class AudioManager: ObservableObject {
 
             playerNode.scheduleBuffer(buf) { [weak self] in
                 guard let self else { return }
-                guard self.playbackGeneration == generation else { return }
+                guard self.genLock.withLock({ $0 }) == generation else { return }
                 if framesRead < self.frameBatch {
-                    self.finishTrack(generation: generation)
+                    self.finishTrack(generation: generation, reason: .completed)
                     return
                 }
-                Task { @MainActor [weak self] in
+                self.pumpQueue.async { [weak self] in
                     self?.scheduleBuffer(format: format, generation: generation)
                 }
             }
@@ -296,40 +351,53 @@ class AudioManager: ObservableObject {
         }
     }
 
-    func resume() {
-        if !playerNode.isPlaying && (decoder != nil || avAudioFile != nil) {
-            playbackStartTime = Date()
-            timeTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-                guard let self, let start = self.playbackStartTime else { return }
-                self.currentTime = self.seekOffset + Date().timeIntervalSince(start)
-            }
-            playerNode.play()
-            isPlaying = true
-            analyzer.isFrozen = false
-        }
+    @discardableResult
+    func resume() -> Bool {
+        guard !playerNode.isPlaying && (decoder != nil || avAudioFile != nil) else { return false }
+        startTimeTimer(generation: genLock.withLock { $0 })
+        playerNode.play()
+        isPlaying = true
+        analyzer.isFrozen = false
+        return true
     }
 
     func seek(to time: Double) {
         guard let path = currentTrackPath else { return }
 
-        playbackGeneration += 1
-        finishNotified = false
-        let generation = playbackGeneration
+        let generation = genLock.withLock { g -> Int in
+            g += 1
+            return g
+        }
+        finishNotifiedLock.withLock { $0 = false }
+        stopTimeTimer()
         seekOffset = time
         currentTime = time
-        playbackStartTime = Date()
 
         if isAVFoundationTrack {
-            guard let file = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else { return }
-            avAudioFile = file
+            // Reuse existing file handle when possible; only reopen if nil.
+            let file: AVAudioFile
+            if let existing = avAudioFile {
+                file = existing
+            } else {
+                guard let opened = try? AVAudioFile(forReading: URL(fileURLWithPath: path)) else { return }
+                avAudioFile = opened
+                file = opened
+            }
 
             let sampleRate = file.fileFormat.sampleRate
             let totalFrames = file.length
             let seekFrame = AVAudioFramePosition(time * sampleRate)
             let remainingFrames = totalFrames - seekFrame
 
-            guard remainingFrames > 0 else { return }
+            guard remainingFrames > 0 else {
+                finishTrack(generation: generation, reason: .completed)
+                return
+            }
 
+            pumpQueue.sync {
+                pitchShifter?.destroy()
+                pitchShifter = nil
+            }
             playerNode.stop()
             engine.reset()
             reconnectAudioGraph()
@@ -339,10 +407,15 @@ class AudioManager: ObservableObject {
             do {
                 try engine.start()
             } catch {
+                Self.logger.warning("seek engine start error: \(error.localizedDescription)")
+                finishTrack(generation: generation, reason: .failed)
                 return
             }
 
-            startPitchedPump(file: file, generation: generation)
+            guard startPitchedPump(file: file, generation: generation) else {
+                finishTrack(generation: generation, reason: .failed)
+                return
+            }
             analyzer.reinstallTap()
             if isPlaying { playerNode.play() }
         } else {
@@ -370,6 +443,10 @@ class AudioManager: ObservableObject {
                 playerNode.play()
             }
         }
+
+        if isPlaying {
+            startTimeTimer(generation: generation)
+        }
     }
 
     func setVolume(_ volume: Float) {
@@ -393,14 +470,22 @@ class AudioManager: ObservableObject {
         return decoder.durationSeconds
     }
 
-    private func finishTrack(generation: Int) {
+    private func finishTrack(generation: Int, reason: TrackEndReason) {
+        // Must invalidate and mutate AVAudioEngine state on the main thread.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            guard self.playbackGeneration == generation, !self.finishNotified else { return }
+            let curGen = self.genLock.withLock { $0 }
+            let alreadyFinished = self.finishNotifiedLock.withLock { $0 }
+            guard curGen == generation, !alreadyFinished else { return }
+            self.finishNotifiedLock.withLock { $0 = true }
+            self.genLock.withLock { $0 += 1 }
 
-            self.finishNotified = true
             let finishedDuration = self.duration
             self.stopTimeTimer()
+            self.pumpQueue.sync {
+                self.pitchShifter?.destroy()
+                self.pitchShifter = nil
+            }
             self.analyzer.removeTap()
             self.playerNode.stop()
             self.decoder?.close()
@@ -410,9 +495,11 @@ class AudioManager: ObservableObject {
             self.currentFrame = 0
             self.isAVFoundationTrack = false
             self.isPlaying = false
-            self.currentTime = max(self.currentTime, finishedDuration)
+            if reason == .completed {
+                self.currentTime = max(self.currentTime, finishedDuration)
+            }
             self.seekOffset = self.currentTime
-            self.onTrackFinished?()
+            self.onTrackFinished?(reason)
         }
     }
 
